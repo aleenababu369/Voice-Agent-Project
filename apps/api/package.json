@@ -1,0 +1,15 @@
+{
+  "name": "@voice-agent/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^8.0.2",
+    "fastify": "^5.8.2",
+    "pg": "^8.20.0",
+    "zod": "^4.3.6"
+  }
+}

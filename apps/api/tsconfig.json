@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "../../",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.ts", "../../packages/contracts/src/**/*.ts"]
+}

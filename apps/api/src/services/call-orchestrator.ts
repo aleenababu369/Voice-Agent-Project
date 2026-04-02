@@ -1,0 +1,94 @@
+import type {
+  AgentProfile,
+  CallSession,
+  CallSlotState,
+  EscalationSummary,
+  OrchestratorDecision,
+  WorkflowDefinition
+} from "../../../../packages/contracts/src/index.ts";
+import { aiAdapters } from "./ai/mock-adapters.ts";
+import { slotExtractor } from "./slot-extractor.ts";
+import { safetyPolicy } from "./safety-policy.ts";
+
+interface ProcessTurnInput {
+  session: CallSession;
+  transcript: string;
+  asrConfidence: number;
+  nluConfidence: number;
+  workflow: WorkflowDefinition;
+  profile: AgentProfile;
+}
+
+interface ProcessTurnResult {
+  decision: OrchestratorDecision;
+  slotState: CallSlotState;
+  missingSlots: string[];
+  allSlotsCollected: boolean;
+}
+
+class CallOrchestrator {
+  async processTurn(input: ProcessTurnInput): Promise<ProcessTurnResult> {
+    const asrResult = await aiAdapters.asr.transcribe({ transcript: input.transcript, confidence: input.asrConfidence, language: input.session.language });
+    const confidence = Math.min(asrResult.confidence, input.nluConfidence);
+    const transcript = asrResult.transcript;
+
+    if (!input.session.consentCaptured) {
+      return this.buildDecision({ input, action: "ask_consent", confidence, slotState: input.session.slotState, missingSlots: input.session.slotState.missing, responseText: input.profile.welcomeMessage, reason: "Consent is required before the workflow can continue.", promptStyle: "consent" });
+    }
+
+    const safetyTrigger = safetyPolicy.evaluate(transcript, confidence);
+    if (safetyTrigger) {
+      const escalationSummary: EscalationSummary = { trigger: safetyTrigger.trigger, reason: safetyTrigger.reason, lastTranscript: transcript, recommendedAction: safetyTrigger.recommendedAction };
+      return this.buildDecision({ input, action: "escalate_to_human", confidence, slotState: input.session.slotState, missingSlots: input.session.slotState.missing, responseText: input.profile.escalationMessage, reason: safetyTrigger.reason, promptStyle: "escalation", escalationSummary });
+    }
+
+    if (confidence < 0.6) {
+      return this.buildDecision({ input, action: "ask_clarification", confidence, slotState: input.session.slotState, missingSlots: input.session.slotState.missing, responseText: "I want to make sure I understood you. Could you please repeat that more clearly?", reason: "Recognition confidence is below the safe threshold.", promptStyle: "clarification" });
+    }
+
+    const extractedSlots = slotExtractor.extractProfile(input.profile, transcript);
+    const collected = { ...input.session.slotState.collected, ...extractedSlots };
+    const requiredSlots = input.profile.slots.filter((slot) => slot.required).map((slot) => slot.key);
+    const missingSlots = requiredSlots.filter((slot) => !collected[slot]);
+    const slotState: CallSlotState = { required: requiredSlots, collected, missing: missingSlots };
+
+    if (missingSlots.length === 0) {
+      return this.buildDecision({ input, action: "complete_call", confidence, slotState, missingSlots, responseText: this.buildCompletionMessage(input.profile, collected), reason: "All required workflow slots are collected.", promptStyle: "completion", extractedSlots, allSlotsCollected: true });
+    }
+
+    const nextPrompt = this.buildNextPrompt(input.profile, missingSlots[0]);
+    return this.buildDecision({ input, action: Object.keys(extractedSlots).length > 0 ? "execute_task" : "respond", confidence, slotState, missingSlots, responseText: nextPrompt, reason: "The workflow is still collecting required fields.", promptStyle: "workflow", extractedSlots });
+  }
+
+  private async buildDecision(args: {
+    input: ProcessTurnInput;
+    action: OrchestratorDecision["action"];
+    confidence: number;
+    slotState: CallSlotState;
+    missingSlots: string[];
+    responseText: string;
+    reason: string;
+    promptStyle: "consent" | "clarification" | "workflow" | "completion" | "escalation";
+    extractedSlots?: Record<string, string>;
+    escalationSummary?: EscalationSummary;
+    allSlotsCollected?: boolean;
+  }): Promise<ProcessTurnResult> {
+    const llmContext = { session: args.input.session, workflow: args.input.workflow, action: args.promptStyle, collectedSlots: args.slotState.collected, missingSlots: args.missingSlots, fallbackText: args.responseText, ...(args.missingSlots[0] ? { nextSlot: args.missingSlots[0] } : {}) };
+    const llmResult = await aiAdapters.llm.generate(llmContext);
+    const ttsResult = await aiAdapters.tts.synthesize({ text: llmResult.text, language: args.input.session.language, domain: args.input.session.domain });
+    const decisionBase: OrchestratorDecision = { action: args.action, confidence: args.confidence, reason: args.reason, responseText: llmResult.text, missingSlots: args.missingSlots, aiMetadata: { asrProvider: "mock", llmProvider: llmResult.provider, ttsProvider: ttsResult.provider, normalizedTranscript: args.input.transcript.replace(/\s+/g, " ").trim(), promptStyle: llmResult.promptStyle, synthesizedVoice: ttsResult.voice } };
+    const decision: OrchestratorDecision = { ...decisionBase, ...(args.extractedSlots ? { extractedSlots: args.extractedSlots } : {}), ...(args.escalationSummary ? { escalationSummary: args.escalationSummary } : {}) };
+    return { decision, slotState: args.slotState, missingSlots: args.missingSlots, allSlotsCollected: Boolean(args.allSlotsCollected) };
+  }
+
+  private buildNextPrompt(profile: AgentProfile, nextSlot?: string) {
+    const slot = profile.slots.find((item) => item.key === nextSlot);
+    return slot?.prompt ?? `Please tell me ${nextSlot ?? "the next required detail"}.`;
+  }
+
+  private buildCompletionMessage(profile: AgentProfile, collected: Record<string, string>) {
+    return profile.completionMessageTemplate.replace(/\{\{(.*?)\}\}/g, (_match, key: string) => collected[key.trim()] ?? `[${key.trim()}]`);
+  }
+}
+
+export const callOrchestrator = new CallOrchestrator();
