@@ -17,6 +17,8 @@ export const createSessionSchema = z.object({
   language: z.enum(["en-IN", "hi-IN", "kn-IN", "ta-IN", "ml-IN"]).default("en-IN"),
   direction: z.enum(["inbound", "outbound"]).default("inbound"),
   contactId: z.string().optional(),
+  prospectId: z.string().optional(),
+  campaignId: z.string().optional(),
   phoneNumber: z.string().min(3),
   displayName: z.string().min(1).optional()
 }).refine((value) => Boolean(value.profileId || (value.domain && value.workflow)), {
@@ -24,6 +26,13 @@ export const createSessionSchema = z.object({
 });
 
 export const consentSchema = z.object({ consentGranted: z.boolean() });
+
+export const inboundCallSchema = z.object({
+  agentProfileId: z.string().min(1),
+  phoneNumber: z.string().min(3),
+  displayName: z.string().min(1).optional(),
+  language: z.enum(["en-IN", "hi-IN", "kn-IN", "ta-IN", "ml-IN"]).optional()
+});
 
 export const registerTenantSchema = z.object({
   name: z.string().min(2),
@@ -35,8 +44,6 @@ export const registerTenantSchema = z.object({
 });
 
 export const deploymentSchema = z.object({
-  actorId: z.string().min(1),
-  tenantId: z.string().min(1).optional(),
   deployed: z.boolean()
 });
 

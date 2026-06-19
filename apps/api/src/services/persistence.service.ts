@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import type { CallDirection, CallEvent, CallMetric, CallSession, Contact, FollowUpStatus, Operation, OperationStatus, OperationType, SessionFollowUp, SessionOutcome, SessionOutcomeType } from "../../../../packages/contracts/src/index.ts";
+import type { Campaign, CampaignStatus, CallDirection, CallEvent, CallMetric, CallSession, Contact, FollowUpStatus, Operation, OperationStatus, OperationType, Prospect, ProspectStatus, SessionFollowUp, SessionOutcome, SessionOutcomeType } from "../../../../packages/contracts/src/index.ts";
 import type { PersistenceMetricsSummary, TurnApplicationResult } from "../domain/persistence.ts";
 
 const operationReferencePrefix: Record<OperationType, string> = {
@@ -18,6 +18,8 @@ class PersistenceService {
   private readonly events: CallEvent[] = [];
   private readonly contacts = new Map<string, Contact>();
   private readonly operations = new Map<string, Operation>();
+  private readonly prospects = new Map<string, Prospect>();
+  private readonly campaigns = new Map<string, Campaign>();
   private pool: Pool | null = null;
   private dbUnavailable = false;
 
@@ -112,6 +114,8 @@ class PersistenceService {
         action: result.decision.action,
         reason: result.decision.reason,
         confidence: result.decision.confidence,
+        transcript,
+        responseText: result.decision.responseText,
         missingSlots: result.decision.missingSlots ?? [],
         collected: updated.slotState.collected,
         aiMetadata: result.decision.aiMetadata ?? null
@@ -289,7 +293,7 @@ class PersistenceService {
     return [...this.contacts.values()].filter((contact) => contact.tenantId === tenantId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  async createOperation(input: { tenantId: string; sessionId: string; agentProfileId?: string; type: OperationType; payload: Record<string, string>; scheduledFor?: string; status?: OperationStatus }) {
+  async createOperation(input: { tenantId: string; sessionId: string; agentProfileId?: string; prospectId?: string; campaignId?: string; type: OperationType; payload: Record<string, string>; scheduledFor?: string; status?: OperationStatus }) {
     const now = new Date().toISOString();
     const id = randomUUID();
     const operation: Operation = {
@@ -297,6 +301,8 @@ class PersistenceService {
       tenantId: input.tenantId,
       sessionId: input.sessionId,
       ...(input.agentProfileId ? { agentProfileId: input.agentProfileId } : {}),
+      ...(input.prospectId ? { prospectId: input.prospectId } : {}),
+      ...(input.campaignId ? { campaignId: input.campaignId } : {}),
       type: input.type,
       status: input.status ?? "created",
       payload: input.payload,
@@ -309,9 +315,9 @@ class PersistenceService {
     const pool = await this.getPool();
     if (pool) {
       await pool.query(
-        `insert into operations (id, session_id, tenant_id, agent_profile_id, type, status, payload, reference_id, scheduled_for, created_at, updated_at)
-         values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11) on conflict (id) do nothing`,
-        [operation.id, operation.sessionId, operation.tenantId, operation.agentProfileId ?? null, operation.type, operation.status, JSON.stringify(operation.payload), operation.referenceId, operation.scheduledFor ?? null, operation.createdAt, operation.updatedAt]
+        `insert into operations (id, session_id, tenant_id, agent_profile_id, prospect_id, campaign_id, type, status, payload, reference_id, scheduled_for, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13) on conflict (id) do nothing`,
+        [operation.id, operation.sessionId, operation.tenantId, operation.agentProfileId ?? null, operation.prospectId ?? null, operation.campaignId ?? null, operation.type, operation.status, JSON.stringify(operation.payload), operation.referenceId, operation.scheduledFor ?? null, operation.createdAt, operation.updatedAt]
       );
     }
     await this.recordEvent({
@@ -369,11 +375,181 @@ class PersistenceService {
     return updated;
   }
 
+  async createProspect(accountId: string, input: { name: string; phoneNumber: string; email?: string; fields?: Record<string, string>; status?: ProspectStatus; campaignId?: string }) {
+    const timestamp = new Date().toISOString();
+    const prospect: Prospect = {
+      id: randomUUID(),
+      accountId,
+      name: input.name,
+      phoneNumber: input.phoneNumber,
+      ...(input.email ? { email: input.email } : {}),
+      fields: input.fields ?? {},
+      status: input.status ?? "new",
+      ...(input.campaignId ? { campaignId: input.campaignId } : {}),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.prospects.set(prospect.id, prospect);
+    const pool = await this.getPool();
+    if (pool) {
+      await pool.query(
+        `insert into prospects (id, tenant_id, name, phone_number, email, fields, status, campaign_id, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10) on conflict (id) do nothing`,
+        [prospect.id, accountId, prospect.name, prospect.phoneNumber, prospect.email ?? null, JSON.stringify(prospect.fields), prospect.status, prospect.campaignId ?? null, prospect.createdAt, prospect.updatedAt]
+      );
+    }
+    return prospect;
+  }
+
+  async getProspect(id: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from prospects where id = $1", [id]);
+      const row = result.rows[0];
+      if (row) return this.mapProspectRow(row as Record<string, unknown>);
+    }
+    return this.prospects.get(id);
+  }
+
+  async listProspects(accountId: string, campaignId?: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = campaignId
+        ? await pool.query("select * from prospects where tenant_id = $1 and campaign_id = $2 order by created_at desc", [accountId, campaignId])
+        : await pool.query("select * from prospects where tenant_id = $1 order by created_at desc", [accountId]);
+      return result.rows.map((row) => this.mapProspectRow(row as Record<string, unknown>));
+    }
+    return [...this.prospects.values()]
+      .filter((prospect) => prospect.accountId === accountId && (!campaignId || prospect.campaignId === campaignId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async updateProspect(id: string, patch: Partial<Pick<Prospect, "name" | "phoneNumber" | "email" | "fields" | "status" | "campaignId" | "lastSessionId" | "lastOutcome">>) {
+    const existing = await this.getProspect(id);
+    if (!existing) return undefined;
+    const updated: Prospect = { ...existing, ...patch, updatedAt: new Date().toISOString() };
+    this.prospects.set(id, updated);
+    const pool = await this.getPool();
+    if (pool) {
+      await pool.query(
+        `update prospects set name = $2, phone_number = $3, email = $4, fields = $5::jsonb, status = $6, campaign_id = $7, last_session_id = $8, last_outcome = $9, updated_at = $10 where id = $1`,
+        [id, updated.name, updated.phoneNumber, updated.email ?? null, JSON.stringify(updated.fields), updated.status, updated.campaignId ?? null, updated.lastSessionId ?? null, updated.lastOutcome ?? null, updated.updatedAt]
+      );
+    }
+    return updated;
+  }
+
+  async createCampaign(accountId: string, input: { name: string; direction: CallDirection; agentProfileId: string }) {
+    const timestamp = new Date().toISOString();
+    const campaign: Campaign = {
+      id: randomUUID(),
+      accountId,
+      name: input.name,
+      direction: input.direction,
+      status: "draft",
+      agentProfileId: input.agentProfileId,
+      prospectIds: [],
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.campaigns.set(campaign.id, campaign);
+    const pool = await this.getPool();
+    if (pool) {
+      await pool.query(
+        `insert into campaigns (id, tenant_id, name, direction, status, agent_profile_id, prospect_ids, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9) on conflict (id) do nothing`,
+        [campaign.id, accountId, campaign.name, campaign.direction, campaign.status, campaign.agentProfileId, JSON.stringify(campaign.prospectIds), campaign.createdAt, campaign.updatedAt]
+      );
+    }
+    return campaign;
+  }
+
+  async getCampaign(id: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from campaigns where id = $1", [id]);
+      const row = result.rows[0];
+      if (row) return this.mapCampaignRow(row as Record<string, unknown>);
+    }
+    return this.campaigns.get(id);
+  }
+
+  async listCampaigns(accountId: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from campaigns where tenant_id = $1 order by created_at desc", [accountId]);
+      return result.rows.map((row) => this.mapCampaignRow(row as Record<string, unknown>));
+    }
+    return [...this.campaigns.values()].filter((campaign) => campaign.accountId === accountId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async updateCampaign(id: string, patch: Partial<Pick<Campaign, "name" | "status" | "agentProfileId" | "prospectIds" | "direction">>) {
+    const existing = await this.getCampaign(id);
+    if (!existing) return undefined;
+    const updated: Campaign = { ...existing, ...patch, updatedAt: new Date().toISOString() };
+    this.campaigns.set(id, updated);
+    const pool = await this.getPool();
+    if (pool) {
+      await pool.query(
+        `update campaigns set name = $2, direction = $3, status = $4, agent_profile_id = $5, prospect_ids = $6::jsonb, updated_at = $7 where id = $1`,
+        [id, updated.name, updated.direction, updated.status, updated.agentProfileId, JSON.stringify(updated.prospectIds), updated.updatedAt]
+      );
+    }
+    return updated;
+  }
+
+  async listMetricsBySession(sessionId: string): Promise<CallMetric[]> {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from call_metrics where session_id = $1 order by recorded_at asc", [sessionId]);
+      return result.rows.map((row) => ({
+        sessionId: row.session_id as string,
+        turnSwitchLatencyMs: Number(row.turn_switch_latency_ms ?? 0),
+        asrConfidence: Number(row.asr_confidence ?? 0),
+        nluConfidence: Number(row.nlu_confidence ?? 0),
+        workflowCompleted: Boolean(row.workflow_completed),
+        escalated: Boolean(row.escalated)
+      }));
+    }
+    return this.metrics.filter((metric) => metric.sessionId === sessionId);
+  }
+
   async close() {
     if (this.pool) {
       await this.pool.end();
       this.pool = null;
     }
+  }
+
+  private mapProspectRow(row: Record<string, unknown>): Prospect {
+    return {
+      id: row.id as string,
+      accountId: row.tenant_id as string,
+      name: row.name as string,
+      phoneNumber: row.phone_number as string,
+      ...(row.email ? { email: row.email as string } : {}),
+      fields: (row.fields as Record<string, string> | undefined) ?? {},
+      status: row.status as ProspectStatus,
+      ...(row.campaign_id ? { campaignId: row.campaign_id as string } : {}),
+      ...(row.last_session_id ? { lastSessionId: row.last_session_id as string } : {}),
+      ...(row.last_outcome ? { lastOutcome: row.last_outcome as string } : {}),
+      createdAt: new Date(row.created_at as string).toISOString(),
+      updatedAt: new Date(row.updated_at as string).toISOString()
+    };
+  }
+
+  private mapCampaignRow(row: Record<string, unknown>): Campaign {
+    return {
+      id: row.id as string,
+      accountId: row.tenant_id as string,
+      name: row.name as string,
+      direction: row.direction as CallDirection,
+      status: row.status as CampaignStatus,
+      agentProfileId: row.agent_profile_id as string,
+      prospectIds: (row.prospect_ids as string[] | undefined) ?? [],
+      createdAt: new Date(row.created_at as string).toISOString(),
+      updatedAt: new Date(row.updated_at as string).toISOString()
+    };
   }
 
   private mapContactRow(row: Record<string, unknown>): Contact {
@@ -393,6 +569,8 @@ class PersistenceService {
       tenantId: row.tenant_id as string,
       sessionId: row.session_id as string,
       ...(row.agent_profile_id ? { agentProfileId: row.agent_profile_id as string } : {}),
+      ...(row.prospect_id ? { prospectId: row.prospect_id as string } : {}),
+      ...(row.campaign_id ? { campaignId: row.campaign_id as string } : {}),
       type: row.type as OperationType,
       status: row.status as OperationStatus,
       payload: (row.payload as Record<string, string> | undefined) ?? {},
@@ -414,14 +592,16 @@ class PersistenceService {
     const pool = await this.getPool();
     if (!pool) return;
     await pool.query(
-      `insert into call_sessions (id, tenant_id, domain, workflow, agent_profile_id, status, language, direction, contact_id, phone_number, display_name, consent_captured, slot_state, follow_up, outcome, turn_count, last_transcript, escalation_summary, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16, $17, $18::jsonb, $19, $20)
+      `insert into call_sessions (id, tenant_id, domain, workflow, agent_profile_id, status, language, direction, contact_id, prospect_id, campaign_id, phone_number, display_name, consent_captured, slot_state, follow_up, outcome, turn_count, last_transcript, escalation_summary, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19, $20::jsonb, $21, $22)
        on conflict (id) do update
            set tenant_id = excluded.tenant_id,
                agent_profile_id = excluded.agent_profile_id,
                status = excluded.status,
                direction = excluded.direction,
                contact_id = excluded.contact_id,
+               prospect_id = excluded.prospect_id,
+               campaign_id = excluded.campaign_id,
                consent_captured = excluded.consent_captured,
                slot_state = excluded.slot_state,
                follow_up = excluded.follow_up,
@@ -440,6 +620,8 @@ class PersistenceService {
         session.language,
         session.direction,
         session.contactId ?? null,
+        session.prospectId ?? null,
+        session.campaignId ?? null,
         session.participant.phoneNumber,
         session.participant.displayName ?? null,
         session.consentCaptured,
@@ -469,6 +651,8 @@ class PersistenceService {
       language: row.language as CallSession["language"],
       direction: (row.direction as CallDirection | undefined) ?? "inbound",
       ...(row.contact_id ? { contactId: row.contact_id as string } : {}),
+      ...(row.prospect_id ? { prospectId: row.prospect_id as string } : {}),
+      ...(row.campaign_id ? { campaignId: row.campaign_id as string } : {}),
       participant,
       consentCaptured: Boolean(row.consent_captured),
       slotState: row.slot_state as CallSession["slotState"],

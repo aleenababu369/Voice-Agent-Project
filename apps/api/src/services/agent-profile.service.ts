@@ -1,4 +1,5 @@
 import type { AgentProfile, Domain, SlotDefinition, Tenant, WorkflowType } from "../../../../packages/contracts/src/index.ts";
+import { authService } from "./auth.service.ts";
 
 const now = () => new Date().toISOString();
 
@@ -7,14 +8,6 @@ type AgentProfileInput = Omit<AgentProfile, "id" | "createdAt" | "updatedAt" | "
 type AgentProfileUpdateInput = Omit<AgentProfile, "id" | "createdAt" | "updatedAt" | "slots"> & { slots: AgentProfileSlotInput[] };
 
 export type AdminRole = "viewer" | "editor" | "admin";
-
-export interface AdminUser {
-  id: string;
-  name: string;
-  role: AdminRole;
-  scope: "all" | Domain;
-  tenantId: string | "all";
-}
 
 export interface AgentProfileTemplate {
   id: string;
@@ -52,11 +45,11 @@ export class AgentProfileValidationError extends Error {
   }
 }
 
+/** Retained for backward compatibility with route error handling; no longer thrown (auth replaces RBAC). */
 export class AgentProfileAccessError extends Error {
   readonly role: AdminRole;
-
   constructor(role: AdminRole, reason?: string) {
-    super(reason ?? `This action requires editor or admin access. Current role: ${role}.`);
+    super(reason ?? "Access denied.");
     this.name = "AgentProfileAccessError";
     this.role = role;
   }
@@ -67,27 +60,6 @@ function normalizeProfileSlots(slots: AgentProfileSlotInput[]): SlotDefinition[]
     ? { key: slot.key, label: slot.label, prompt: slot.prompt, required: slot.required, examples: slot.examples }
     : { key: slot.key, label: slot.label, prompt: slot.prompt, required: slot.required });
 }
-
-const seedTenants: Tenant[] = [
-  {
-    id: "city-hospital",
-    name: "City Hospital",
-    description: "Hospital operations workspace for appointments and patient intake.",
-    domainFocus: "healthcare"
-  },
-  {
-    id: "greenfield-college",
-    name: "Greenfield College",
-    description: "Admissions and enquiry workspace for education institution workflows.",
-    domainFocus: "education"
-  },
-  {
-    id: "northstar-frontdesk",
-    name: "Northstar Business Center",
-    description: "Front desk workspace for visitor routing and reception operations.",
-    domainFocus: "frontdesk"
-  }
-];
 
 const agentProfileTemplates: AgentProfileTemplate[] = [
   {
@@ -166,24 +138,20 @@ const agentProfileTemplates: AgentProfileTemplate[] = [
   }
 ];
 
-const seedAdminUsers: AdminUser[] = [
-  { id: "platform-admin", name: "Priya Menon", role: "admin", scope: "all", tenantId: "all" },
-  { id: "ops-editor", name: "Rahul S", role: "editor", scope: "all", tenantId: "all" },
-  { id: "city-hospital-editor", name: "Asha Clinic Ops", role: "editor", scope: "healthcare", tenantId: "city-hospital" },
-  { id: "greenfield-viewer", name: "Nisha Admissions", role: "viewer", scope: "education", tenantId: "greenfield-college" },
-  { id: "northstar-editor", name: "Ravi Front Desk", role: "editor", scope: "frontdesk", tenantId: "northstar-frontdesk" }
-];
-
 function cloneSlots(slots: SlotDefinition[]) {
   return slots.map((slot) => slot.examples ? { ...slot, examples: [...slot.examples] } : { ...slot });
 }
 
-function buildProfileFromTemplate(template: AgentProfileTemplate, tenantId: string, customName?: string, status: AgentProfile["status"] = "deployed"): AgentProfile {
+function templateForUseCase(useCase: Domain): AgentProfileTemplate {
+  return agentProfileTemplates.find((item) => item.domain === useCase) ?? agentProfileTemplates[0]!;
+}
+
+function buildProfileFromTemplate(template: AgentProfileTemplate, accountId: string, customName?: string, status: AgentProfile["status"] = "deployed"): AgentProfile {
   const timestamp = now();
-  const tenantSlug = tenantId.replace(/[^a-z0-9]+/g, "-");
+  const slug = accountId.replace(/[^a-z0-9]+/g, "-");
   return {
-    id: `${tenantSlug}-${template.workflow}`,
-    tenantId,
+    id: `${slug}-${template.workflow}`,
+    tenantId: accountId,
     name: customName ?? template.name,
     domain: template.domain,
     workflow: template.workflow,
@@ -201,95 +169,58 @@ function buildProfileFromTemplate(template: AgentProfileTemplate, tenantId: stri
   };
 }
 
-export interface RegisterTenantInput {
-  name: string;
-  description: string;
-  domainFocus: Domain;
-  adminContactName?: string | undefined;
-  adminContactEmail?: string | undefined;
-  useCaseTemplateId?: string | undefined;
+const SYSTEM_ACTOR = { id: "system", name: "System", role: "admin" as AdminRole };
+
+function accountActor(accountId: string): { id: string; name: string; role: AdminRole } {
+  const account = authService.findAccount(accountId);
+  return { id: accountId, name: account?.name ?? accountId, role: "admin" };
 }
 
 class AgentProfileService {
   private readonly profiles = new Map<string, AgentProfile>();
   private readonly versions = new Map<string, AgentProfileVersion[]>();
-  private readonly tenants: Tenant[] = [...seedTenants];
-  private readonly adminUsers: AdminUser[] = [...seedAdminUsers];
-  private readonly defaultTenantId = seedTenants[0]!.id;
 
   constructor() {
-    const seededProfiles = [
+    const seeded = [
       buildProfileFromTemplate(agentProfileTemplates[0]!, "city-hospital", "City Hospital Appointment Desk"),
       buildProfileFromTemplate(agentProfileTemplates[2]!, "greenfield-college", "Greenfield Admissions Reception"),
       buildProfileFromTemplate(agentProfileTemplates[1]!, "northstar-frontdesk", "Northstar Reception Desk")
     ];
-
-    for (const profile of seededProfiles) {
+    for (const profile of seeded) {
       this.profiles.set(profile.id, profile);
-      this.versions.set(profile.id, [this.createVersionSnapshot(profile, this.adminUsers[0]!, "Initial tenant profile seed")]);
+      this.versions.set(profile.id, [this.createVersionSnapshot(profile, SYSTEM_ACTOR, "Initial demo seed")]);
     }
   }
 
   getDefaultTenantId() {
-    return this.defaultTenantId;
+    return authService.getDefaultAccountId();
   }
 
-  listTenants() {
-    return this.tenants;
+  /** Account presented in the legacy Tenant shape (id/name/description/domainFocus) for display call sites. */
+  getTenant(id?: string): Tenant {
+    const account = authService.getAccount(id ?? authService.getDefaultAccountId());
+    return { id: account.id, name: account.name, description: `${account.name} workspace`, domainFocus: account.useCase ?? "education", createdAt: account.createdAt };
   }
 
-  getTenant(id?: string) {
-    const tenantId = id ?? this.defaultTenantId;
-    const tenant = this.tenants.find((item) => item.id === tenantId);
-    if (!tenant) throw new Error(`Tenant not found: ${tenantId}`);
-    return tenant;
+  getAccount(id?: string) {
+    return authService.getAccount(id ?? authService.getDefaultAccountId());
   }
 
-  registerTenant(input: RegisterTenantInput) {
-    const name = input.name.trim();
-    if (name.length < 2) throw new AgentProfileValidationError(["Workspace name must be at least 2 characters."]);
-    const baseSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "workspace";
-    let slug = baseSlug;
-    let suffix = 2;
-    while (this.tenants.some((tenant) => tenant.id === slug)) slug = `${baseSlug}-${suffix++}`;
+  listTenants(): Tenant[] {
+    return authService.listAccounts().map((account) => ({ id: account.id, name: account.name, description: `${account.name} workspace`, domainFocus: account.useCase ?? "education", createdAt: account.createdAt }));
+  }
 
-    const timestamp = now();
-    const tenant: Tenant = {
-      id: slug,
-      name,
-      description: input.description.trim() || `${name} workspace`,
-      domainFocus: input.domainFocus,
-      ...(input.adminContactName ? { adminContactName: input.adminContactName } : {}),
-      ...(input.adminContactEmail ? { adminContactEmail: input.adminContactEmail } : {}),
-      createdAt: timestamp
-    };
-    this.tenants.push(tenant);
-
-    const adminUser: AdminUser = {
-      id: `${slug}-admin`,
-      name: input.adminContactName?.trim() || `${name} Admin`,
-      role: "admin",
-      scope: input.domainFocus,
-      tenantId: slug
-    };
-    this.adminUsers.push(adminUser);
-
-    const template = (input.useCaseTemplateId
-      ? agentProfileTemplates.find((item) => item.id === input.useCaseTemplateId)
-      : agentProfileTemplates.find((item) => item.domain === input.domainFocus))
-      ?? agentProfileTemplates.find((item) => item.domain === input.domainFocus)
-      ?? agentProfileTemplates[0]!;
-
-    const profile = buildProfileFromTemplate(template, slug, `${name} Agent`, "draft");
+  /** Create the starter agent for a freshly onboarded account, from the use-case template. */
+  provisionStarterAgent(accountId: string, useCase: Domain, accountName?: string) {
+    const template = templateForUseCase(useCase);
+    const profile = buildProfileFromTemplate(template, accountId, `${accountName ?? this.getAccount(accountId).name} Agent`, "draft");
     this.profiles.set(profile.id, profile);
-    this.versions.set(profile.id, [this.createVersionSnapshot(profile, adminUser, "Workspace provisioned")]);
-
-    return { tenant, adminUser, profile };
+    this.versions.set(profile.id, [this.createVersionSnapshot(profile, accountActor(accountId), "Starter agent provisioned")]);
+    return profile;
   }
 
-  setDeployment(profileId: string, deployed: boolean, actorId: string, tenantId?: string) {
-    const existing = this.get(profileId, tenantId);
-    const actor = this.assertCanEdit(actorId, existing.domain, existing.tenantId);
+  setDeployment(profileId: string, deployed: boolean, accountId: string) {
+    const existing = this.get(profileId, accountId);
     const timestamp = now();
     const profile: AgentProfile = {
       ...existing,
@@ -298,7 +229,7 @@ class AgentProfileService {
       updatedAt: timestamp
     };
     this.profiles.set(profileId, profile);
-    this.appendVersion(profile, actor, deployed ? "Profile deployed" : "Profile undeployed");
+    this.appendVersion(profile, accountActor(accountId), deployed ? "Agent deployed" : "Agent moved to draft");
     return profile;
   }
 
@@ -306,29 +237,13 @@ class AgentProfileService {
     return profile.status !== "draft";
   }
 
-  list(tenantId?: string) {
-    const scopedTenantId = tenantId ?? this.defaultTenantId;
-    this.getTenant(scopedTenantId);
-    return [...this.profiles.values()].filter((profile) => profile.tenantId === scopedTenantId);
+  list(accountId?: string) {
+    const scoped = accountId ?? authService.getDefaultAccountId();
+    return [...this.profiles.values()].filter((profile) => profile.tenantId === scoped);
   }
 
   listTemplates() {
     return agentProfileTemplates;
-  }
-
-  listUsers(tenantId?: string) {
-    const scopedTenantId = tenantId ?? this.defaultTenantId;
-    this.getTenant(scopedTenantId);
-    return this.adminUsers.filter((user) => user.tenantId === "all" || user.tenantId === scopedTenantId);
-  }
-
-  getUser(id: string, tenantId?: string) {
-    const user = this.adminUsers.find((item) => item.id === id);
-    if (!user) throw new Error(`Admin user not found: ${id}`);
-    if (tenantId && user.tenantId !== "all" && user.tenantId !== tenantId) {
-      throw new AgentProfileAccessError(user.role, `This user cannot manage tenant ${tenantId}.`);
-    }
-    return user;
   }
 
   getTemplate(id: string) {
@@ -337,12 +252,12 @@ class AgentProfileService {
     return template;
   }
 
-  createFromTemplate(id: string, tenantId?: string) {
+  createFromTemplate(id: string, accountId?: string) {
     const template = this.getTemplate(id);
-    const tenant = this.getTenant(tenantId);
+    const scoped = accountId ?? authService.getDefaultAccountId();
     return {
       id: "",
-      tenantId: tenant.id,
+      tenantId: scoped,
       name: template.name,
       domain: template.domain,
       workflow: template.workflow,
@@ -356,76 +271,64 @@ class AgentProfileService {
     };
   }
 
-  get(id: string, tenantId?: string) {
+  get(id: string, accountId?: string) {
     const profile = this.profiles.get(id);
     if (!profile) throw new Error(`Agent profile not found: ${id}`);
-    if (tenantId && profile.tenantId !== tenantId) throw new Error(`Agent profile not found: ${id}`);
+    if (accountId && profile.tenantId !== accountId) throw new Error(`Agent profile not found: ${id}`);
     return profile;
   }
 
-  listVersions(profileId: string, tenantId?: string) {
-    this.get(profileId, tenantId);
+  listVersions(profileId: string, accountId?: string) {
+    this.get(profileId, accountId);
     return [...(this.versions.get(profileId) ?? [])].sort((left, right) => right.version - left.version);
   }
 
-  create(input: AgentProfileInput, actorId: string, tenantId?: string) {
-    const scopedTenantId = input.tenantId || tenantId || this.defaultTenantId;
-    const actor = this.assertCanEdit(actorId, input.domain, scopedTenantId);
-    const normalizedInput = { ...input, tenantId: scopedTenantId, slots: normalizeProfileSlots(input.slots) };
+  create(input: AgentProfileInput, accountId: string) {
+    const normalizedInput = { ...input, tenantId: accountId, slots: normalizeProfileSlots(input.slots) };
     this.assertValid(normalizedInput);
     const timestamp = now();
     const id = input.id && input.id.trim().length > 0
       ? input.id
-      : `${scopedTenantId.replace(/[^a-z0-9]+/g, "-")}-${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+      : `${accountId.replace(/[^a-z0-9]+/g, "-")}-${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
     const profile: AgentProfile = { ...normalizedInput, id, createdAt: timestamp, updatedAt: timestamp };
     this.profiles.set(profile.id, profile);
-    this.appendVersion(profile, actor, "Profile created");
+    this.appendVersion(profile, accountActor(accountId), "Agent created");
     return profile;
   }
 
-  update(id: string, input: AgentProfileUpdateInput, actorId: string, tenantId?: string) {
-    const existing = this.get(id, tenantId);
-    const actor = this.assertCanEdit(actorId, existing.domain, existing.tenantId);
+  update(id: string, input: AgentProfileUpdateInput, accountId: string) {
+    const existing = this.get(id, accountId);
     const normalizedInput = { ...input, tenantId: existing.tenantId, slots: normalizeProfileSlots(input.slots) };
     this.assertValid(normalizedInput);
     const profile: AgentProfile = { ...existing, ...normalizedInput, id, tenantId: existing.tenantId, createdAt: existing.createdAt, updatedAt: now() };
     this.profiles.set(id, profile);
-    this.appendVersion(profile, actor, "Profile updated");
+    this.appendVersion(profile, accountActor(accountId), "Agent updated");
     return profile;
   }
 
-  restoreVersion(profileId: string, versionId: string, actorId: string, tenantId?: string) {
-    const existing = this.get(profileId, tenantId);
-    const actor = this.assertCanEdit(actorId, existing.domain, existing.tenantId);
+  restoreVersion(profileId: string, versionId: string, accountId: string) {
+    const existing = this.get(profileId, accountId);
     const version = this.listVersions(profileId, existing.tenantId).find((item) => item.id === versionId);
     if (!version) throw new Error(`Profile version not found: ${versionId}`);
     const restored: AgentProfile = { ...version.profile, id: existing.id, tenantId: existing.tenantId, createdAt: existing.createdAt, updatedAt: now() };
     this.profiles.set(profileId, restored);
-    this.appendVersion(restored, actor, `Restored version ${version.version}`);
+    this.appendVersion(restored, accountActor(accountId), `Restored version ${version.version}`);
     return restored;
   }
 
-  findByWorkflow(workflow: WorkflowType, domain: Domain, tenantId?: string) {
-    const scopedTenantId = tenantId ?? this.defaultTenantId;
-    const matches = this.list(scopedTenantId).filter((profile) => profile.workflow === workflow && profile.domain === domain);
+  findByWorkflow(workflow: WorkflowType, domain: Domain, accountId?: string) {
+    const scoped = accountId ?? authService.getDefaultAccountId();
+    const matches = this.list(scoped).filter((profile) => profile.workflow === workflow && profile.domain === domain);
     return matches.find((profile) => this.isDeployed(profile)) ?? matches[0] ?? null;
   }
 
-  private assertCanEdit(actorId: string, profileDomain: Domain, tenantId: string) {
-    const actor = this.getUser(actorId, tenantId);
-    if (actor.role === "viewer") throw new AgentProfileAccessError(actor.role);
-    if (actor.scope !== "all" && actor.scope !== profileDomain) throw new AgentProfileAccessError(actor.role, `This user cannot edit the ${profileDomain} domain.`);
-    if (actor.tenantId !== "all" && actor.tenantId !== tenantId) throw new AgentProfileAccessError(actor.role, `This user cannot edit tenant ${tenantId}.`);
-    return actor;
-  }
-
-  private appendVersion(profile: AgentProfile, actor: AdminUser, changeSummary: string) {
+  private appendVersion(profile: AgentProfile, actor: { id: string; name: string; role: AdminRole }, changeSummary: string) {
     const versions = this.versions.get(profile.id) ?? [];
     const snapshot = this.createVersionSnapshot(profile, actor, changeSummary, versions.length + 1);
     this.versions.set(profile.id, [snapshot, ...versions]);
   }
 
-  private createVersionSnapshot(profile: AgentProfile, actor: AdminUser, changeSummary: string, version = 1): AgentProfileVersion {
+  private createVersionSnapshot(profile: AgentProfile, actor: { id: string; name: string; role: AdminRole }, changeSummary: string, version = 1): AgentProfileVersion {
     return {
       id: `${profile.id}-v${version}`,
       profileId: profile.id,
@@ -439,7 +342,6 @@ class AgentProfileService {
 
   private assertValid(input: Omit<AgentProfile, "id" | "createdAt" | "updatedAt">) {
     const issues: string[] = [];
-    this.getTenant(input.tenantId);
     const slotKeys = input.slots.map((slot) => slot.key.trim());
     const duplicateKeys = slotKeys.filter((key, index) => slotKeys.indexOf(key) !== index);
     if (duplicateKeys.length > 0) issues.push(`Slot keys must be unique. Duplicate keys: ${[...new Set(duplicateKeys)].join(", ")}.`);

@@ -2,6 +2,77 @@ export type DomainDto = "education" | "healthcare" | "frontdesk";
 export type CallDirectionDto = "inbound" | "outbound";
 export type AgentDeploymentStatusDto = "draft" | "deployed";
 
+export interface AccountDto {
+  id: string;
+  name: string;
+  email: string;
+  useCase: DomainDto | null;
+  isDemo?: boolean;
+  createdAt: string;
+}
+
+export type ProspectStatusDto = "new" | "queued" | "in_progress" | "contacted" | "completed" | "failed";
+
+export interface ProspectDto {
+  id: string;
+  accountId: string;
+  name: string;
+  phoneNumber: string;
+  email?: string;
+  fields: Record<string, string>;
+  status: ProspectStatusDto;
+  campaignId?: string;
+  lastSessionId?: string;
+  lastOutcome?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CampaignStatusDto = "draft" | "active" | "paused" | "completed";
+
+export interface CampaignDto {
+  id: string;
+  accountId: string;
+  name: string;
+  direction: CallDirectionDto;
+  status: CampaignStatusDto;
+  agentProfileId: string;
+  prospectIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CallTranscriptEntry {
+  role: "agent" | "caller";
+  text: string;
+  at: string;
+}
+
+export interface CallDetailDto {
+  sessionId: string;
+  tenantId: string;
+  agentProfileId?: string;
+  prospectId?: string;
+  campaignId?: string;
+  direction: CallDirectionDto;
+  status: string;
+  durationMs: number;
+  turnCount: number;
+  averageLatencyMs: number;
+  averageAsrConfidence: number;
+  averageNluConfidence: number;
+  participant: { phoneNumber: string; displayName?: string };
+  language: string;
+  collected: Record<string, string>;
+  missing: string[];
+  outcome: SessionOutcomeDto;
+  followUp: SessionFollowUpDto;
+  operations: OperationDto[];
+  transcript: CallTranscriptEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type Screen =
   | "home"
   | "onboard"
@@ -166,6 +237,24 @@ export interface PlatformTotalsDto {
   totalOperations: number;
   inboundSessions: number;
   outboundSessions: number;
+  totalCampaigns: number;
+  totalProspects: number;
+}
+
+export interface CampaignAnalyticsDto {
+  id: string;
+  name: string;
+  direction: CallDirectionDto;
+  status: CampaignStatusDto;
+  prospectCount: number;
+  totalCalls: number;
+  completedCalls: number;
+  completionRate: number;
+}
+
+export interface ProspectFunnelDto {
+  status: ProspectStatusDto;
+  total: number;
 }
 
 export interface OperationTypeAnalyticsDto {
@@ -224,6 +313,8 @@ export interface PlatformAnalyticsDto {
   operationTypes: OperationTypeAnalyticsDto[];
   operationStatuses: OperationStatusAnalyticsDto[];
   channelMix: ChannelMixDto;
+  campaigns: CampaignAnalyticsDto[];
+  prospectFunnel: ProspectFunnelDto[];
   profiles: ProfileAnalyticsDto[];
 }
 

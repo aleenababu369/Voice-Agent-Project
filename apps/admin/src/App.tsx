@@ -1,43 +1,26 @@
 import { useEffect } from "react";
+import { RouterProvider } from "react-router-dom";
 import { useAppDispatch, useAppSelector } from "./app/hooks";
-import { fetchDemoConfig, fetchMetrics, resetDemoWorkspace } from "./features/demo/demoSlice";
-import {
-  fetchAnalytics,
-  fetchContacts,
-  fetchDailyReport,
-  fetchOperations,
-  fetchProfiles,
-  fetchSessions,
-  fetchTemplates,
-  fetchTenants,
-  fetchUsers
-} from "./features/platform/platformSlice";
-import { DashboardLayout } from "./components/layout/DashboardLayout";
+import { fetchMe, logout } from "./features/auth/authSlice";
+import { router } from "./app/router";
 
 function App() {
   const dispatch = useAppDispatch();
-  const selectedTenantId = useAppSelector((state) => state.platform.selectedTenantId);
+  const token = useAppSelector((state) => state.auth.token);
+  const status = useAppSelector((state) => state.auth.status);
 
   useEffect(() => {
-    void dispatch(fetchTenants());
-    void dispatch(fetchTemplates());
+    if (token && status === "loading") void dispatch(fetchMe());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const handler = () => dispatch(logout());
+    window.addEventListener("va:unauthorized", handler);
+    return () => window.removeEventListener("va:unauthorized", handler);
   }, [dispatch]);
 
-  useEffect(() => {
-    if (!selectedTenantId) return;
-    dispatch(resetDemoWorkspace());
-    void dispatch(fetchUsers());
-    void dispatch(fetchProfiles());
-    void dispatch(fetchSessions());
-    void dispatch(fetchOperations());
-    void dispatch(fetchContacts());
-    void dispatch(fetchAnalytics());
-    void dispatch(fetchDailyReport(undefined));
-    void dispatch(fetchDemoConfig());
-    void dispatch(fetchMetrics());
-  }, [dispatch, selectedTenantId]);
-
-  return <DashboardLayout />;
+  return <RouterProvider router={router} />;
 }
 
 export default App;

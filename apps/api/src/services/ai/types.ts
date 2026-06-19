@@ -36,6 +36,29 @@ export interface LlmAdapter {
   generate(context: LlmPromptContext): Promise<LlmResult>;
 }
 
+export interface LlmTurnRequest {
+  systemPrompt: string;
+  welcomeMessage: string;
+  language: CallSession["language"];
+  slots: Array<{ key: string; label: string; prompt: string; required: boolean }>;
+  collected: Record<string, string>;
+  missing: string[];
+  transcript: string;
+  history?: Array<{ role: "agent" | "caller"; text: string }>;
+}
+
+export interface LlmTurnResult {
+  reply: string;
+  extractedFields: Record<string, string>;
+  action: "ask_clarification" | "collect" | "complete" | "escalate";
+  confidence: number;
+}
+
+/** A real (LLM-backed) turn engine: generates the agent's reply AND extracts fields in one call. */
+export interface LlmTurnAdapter {
+  runTurn(request: LlmTurnRequest): Promise<LlmTurnResult | null>;
+}
+
 export interface TtsAdapter {
   synthesize(input: { text: string; language: CallSession["language"]; domain: CallSession["domain"] }): Promise<TtsResult>;
 }

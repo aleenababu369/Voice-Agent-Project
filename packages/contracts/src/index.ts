@@ -23,6 +23,16 @@ export interface Tenant {
   createdAt?: string;
 }
 
+/** A user account. One login credential = one account = one isolated org. `useCase` is null until onboarding. */
+export interface Account {
+  id: string;
+  name: string;
+  email: string;
+  useCase: Domain | null;
+  isDemo?: boolean;
+  createdAt: string;
+}
+
 export type SessionStatus =
   | "initiated"
   | "consent_pending"
@@ -80,6 +90,37 @@ export interface Contact {
   createdAt: string;
 }
 
+export type ProspectStatus = "new" | "queued" | "in_progress" | "contacted" | "completed" | "failed";
+
+export interface Prospect {
+  id: string;
+  accountId: string;
+  name: string;
+  phoneNumber: string;
+  email?: string;
+  fields: Record<string, string>;
+  status: ProspectStatus;
+  campaignId?: string;
+  lastSessionId?: string;
+  lastOutcome?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CampaignStatus = "draft" | "active" | "paused" | "completed";
+
+export interface Campaign {
+  id: string;
+  accountId: string;
+  name: string;
+  direction: CallDirection;
+  status: CampaignStatus;
+  agentProfileId: string;
+  prospectIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type OperationType =
   | "appointment"
   | "enquiry"
@@ -95,6 +136,8 @@ export interface Operation {
   tenantId: string;
   sessionId: string;
   agentProfileId?: string;
+  prospectId?: string;
+  campaignId?: string;
   type: OperationType;
   status: OperationStatus;
   payload: Record<string, string>;
@@ -159,6 +202,8 @@ export interface CallSession {
   status: SessionStatus;
   direction: CallDirection;
   contactId?: string;
+  prospectId?: string;
+  campaignId?: string;
   participant: CallParticipant;
   consentCaptured: boolean;
   slotState: CallSlotState;

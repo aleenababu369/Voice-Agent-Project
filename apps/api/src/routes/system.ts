@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { resolveAccountId } from "../plugins/auth.middleware.ts";
 
 const followUpStatusList = ["new", "in_progress", "contacted", "resolved", "closed"] as const;
 const outcomeTypeList = ["none", "callback_scheduled", "appointment_confirmed", "enquiry_forwarded", "visitor_routed", "closed_no_action"] as const;
@@ -133,8 +134,8 @@ export function registerSystemRoutes(app: FastifyInstance) {
   }));
 
   app.get("/v1/metrics", async (request) => {
-    const { tenantId } = request.query as { tenantId?: string };
-    const summary = await app.services.persistence.getMetricsSummary(tenantId);
+    const accountId = resolveAccountId(request, (request.query as { tenantId?: string }).tenantId);
+    const summary = await app.services.persistence.getMetricsSummary(accountId);
     return {
       totalTurns: summary.total_turns,
       averageLatencyMs: summary.average_latency_ms,
@@ -146,8 +147,8 @@ export function registerSystemRoutes(app: FastifyInstance) {
   });
 
   app.get("/v1/platform/analytics", async (request) => {
-    const { tenantId } = request.query as { tenantId?: string };
-    const tenant = app.services.agentProfiles.getTenant(tenantId);
+    const accountId = resolveAccountId(request, (request.query as { tenantId?: string }).tenantId);
+    const tenant = app.services.agentProfiles.getTenant(accountId);
     const sessions = await app.services.persistence.listSessions(tenant.id);
     const operations = await app.services.persistence.listOperations(tenant.id);
     const profiles = app.services.agentProfiles.list(tenant.id);
@@ -201,6 +202,27 @@ export function registerSystemRoutes(app: FastifyInstance) {
       outbound: sessions.filter((session) => session.direction === "outbound").length
     };
 
+    const campaignList = await app.services.persistence.listCampaigns(tenant.id);
+    const prospectList = await app.services.persistence.listProspects(tenant.id);
+    const campaigns = campaignList.map((campaign) => {
+      const campaignSessions = sessions.filter((session) => session.campaignId === campaign.id);
+      const completed = campaignSessions.filter((session) => session.status === "completed").length;
+      return {
+        id: campaign.id,
+        name: campaign.name,
+        direction: campaign.direction,
+        status: campaign.status,
+        prospectCount: campaign.prospectIds.length,
+        totalCalls: campaignSessions.length,
+        completedCalls: completed,
+        completionRate: campaignSessions.length === 0 ? 0 : Number((completed / campaignSessions.length).toFixed(2))
+      };
+    });
+    const prospectFunnel = ["new", "queued", "in_progress", "contacted", "completed", "failed"].map((status) => ({
+      status,
+      total: prospectList.filter((prospect) => prospect.status === status).length
+    }));
+
     const profileMap = new Map(profiles.map((profile) => [profile.id, profile]));
     const profileAnalytics = [...profileMap.values()].map((profile) => {
       const profileSessions = sessions.filter((session) => session.agentProfileId === profile.id);
@@ -239,7 +261,9 @@ export function registerSystemRoutes(app: FastifyInstance) {
         escalationRate: totalSessions === 0 ? 0 : Number((escalatedSessions / totalSessions).toFixed(2)),
         totalOperations: operations.length,
         inboundSessions: channelMix.inbound,
-        outboundSessions: channelMix.outbound
+        outboundSessions: channelMix.outbound,
+        totalCampaigns: campaignList.length,
+        totalProspects: prospectList.length
       },
       domains,
       followUpStatuses,
@@ -247,13 +271,16 @@ export function registerSystemRoutes(app: FastifyInstance) {
       operationTypes,
       operationStatuses,
       channelMix,
+      campaigns,
+      prospectFunnel,
       profiles: profileAnalytics
     };
   });
 
   app.get("/v1/platform/reports/daily", async (request) => {
-    const { tenantId, date } = request.query as { tenantId?: string; date?: string };
-    const tenant = app.services.agentProfiles.getTenant(tenantId);
+    const { date } = request.query as { date?: string };
+    const accountId = resolveAccountId(request, (request.query as { tenantId?: string }).tenantId);
+    const tenant = app.services.agentProfiles.getTenant(accountId);
     const reportDate = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : todayIsoDate();
     const allSessions = await app.services.persistence.listSessions(tenant.id);
     const sessions = allSessions.filter((session) => session.createdAt.slice(0, 10) === reportDate);

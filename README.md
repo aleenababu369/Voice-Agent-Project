@@ -1,84 +1,79 @@
-# Multilingual AI Voice Agent
+# Multilingual AI Voice Agent Platform
 
-This repository is the build foundation for your M.Tech final-year project:
+M.Tech final-year project:
 
-**A Low-Latency Multilingual AI Voice Agent for Automated Telephonic Interactions in Education and Healthcare**
+**A Low-Latency Multilingual AI Voice Agent for Automated Telephonic Interactions in Education and Healthcare.**
 
-## Fully no-cost demo mode
+A multi-user platform where each account builds, deploys, and runs its own voice agent. Calls are **simulated in the browser** (no telephony cost), but the agent, the model, the data collection, and the analytics are all real and run locally — no deployment required.
 
-This project supports a fully zero-cost demo path.
+## The workflow
 
-It uses:
+1. **Sign up / log in** — many users, each with an isolated account.
+2. **Onboard once** — choose a use case (hospital / education / front desk); a starter agent is provisioned.
+3. **Build & deploy an agent** — configure its prompt, what it says and asks, the fields to collect, and languages; then deploy it so it can take calls.
+4. **Add prospects** — the people the agent will talk to (with their known details).
+5. **Run calls** — inbound (a prospect calls in) or outbound (the agent dials prospects in an active campaign).
+6. **Operations & analytics** — every completed call books a real operation (appointment, enquiry, visitor routing) against the prospect, with per-call and aggregate analytics.
 
-- the existing backend session and orchestration APIs
-- a React + Vite frontend with Tailwind v4
-- Redux Toolkit for demo/session state
-- Axios for API communication
-- browser speech synthesis for voice output
-- optional browser speech recognition for mic input when supported
-- mock ASR, LLM, and TTS adapters on the backend
-- multilingual demo utterances for English, Hindi-style, and Kannada-style flows
-- guided demo scripts and seeded sample records for presentation without paid services
+## Architecture
+
+- **Monorepo** — `apps/api` (Fastify + TypeScript), `apps/admin` (React 19 + Vite), `packages/contracts` (shared types).
+- **Auth** — signup/login with scrypt-hashed passwords and HS256 JWTs (built on `node:crypto`, no extra dependencies). All data is scoped to the authenticated account.
+- **Entities** — accounts, agents (profiles with versioning), prospects, campaigns, call sessions, and operations. In-memory by default; an optional PostgreSQL path mirrors it (`infra/sql/*.sql`).
+- **Conversation engine** — a turn pipeline with consent capture, a safety/escalation policy, slot extraction, and completion. `services/call-runner.ts` is shared by the REST turn route, the campaign dialer, and the softphone relay.
+- **Real model (optional)** — an OpenAI-compatible LLM adapter drives the agent's replies and field extraction when configured; otherwise the built-in zero-cost rule engine runs. ASR/TTS use the browser's Web Speech APIs.
+- **Two-tab softphone** — a backend WebSocket relay lets a real person answer a call in a second browser tab while the dashboard monitors the conversation live.
 
 ## Run locally
 
-Start the backend:
-
 ```bash
-npm run dev:api
+npm run dev:api      # API at http://127.0.0.1:5005
+npm run dev:admin    # Dashboard at http://127.0.0.1:5173
 ```
 
-The API runs on `http://127.0.0.1:5005` by default.
+Open the dashboard, sign up (or use a demo login), and walk the workflow. Demo accounts (already seeded):
 
-Start the frontend:
+| Email | Password | Use case |
+| --- | --- | --- |
+| `hospital@demo.local` | `demo1234` | healthcare |
+| `college@demo.local` | `demo1234` | education |
+| `frontdesk@demo.local` | `demo1234` | front desk |
+
+### Try the full flow
+
+1. **Agents** → deploy the starter agent.
+2. **Prospects** → add a few people (give fields such as `patient_name`, `age`, `issue`, `doctor_name`, `preferred_date`, `preferred_time`).
+3. **Campaigns** → create an outbound campaign, add the prospects, **Activate**, then **Run auto-dial** and watch the live queue book appointments hands-free.
+4. **Live two-tab call** → **Call console** → place a call → **Open softphone** (a second tab) → answer and talk as the prospect; the console shows the transcript and analytics in real time.
+5. **Call history / Analytics** → inspect per-call detail (duration, turns, latency, confidence, transcript, collected data) and aggregate, campaign, and prospect-funnel metrics.
+
+> The softphone needs the browser microphone, which only works on `localhost` or HTTPS. On `localhost` (one machine, two tabs) it works out of the box; on a second device over plain `http://<lan-ip>` the mic is blocked, so type the prospect's replies instead.
+
+## Configuration
+
+Copy `.env.example` and adjust as needed. Everything runs in-memory with no config; the optional pieces:
+
+| Variable | Purpose |
+| --- | --- |
+| `JWT_SECRET` | Secret used to sign login tokens (set a strong value in production). |
+| `AUTH_ENFORCE` | `true` to require a valid token on all non-public routes. |
+| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Point the agent at a real OpenAI-compatible model (e.g. OpenAI, or a free local Ollama / LM Studio at `http://localhost:11434/v1`). Leave unset to use the built-in rule engine. |
+| `DATABASE_URL` | Optional PostgreSQL; falls back to in-memory when unavailable. |
+
+## Build & verify
 
 ```bash
-npm run dev:admin
+npm run build:admin                              # production build of the dashboard
+npx tsc -p apps/api/tsconfig.json --noEmit       # type-check the API
+npx tsc -p apps/admin/tsconfig.json --noEmit     # type-check the dashboard
+npm run smoke:api                                # boot the API and hit /health
 ```
 
-Build the frontend:
+## What makes it a real demo
 
-```bash
-npm run build:admin
-```
-
-## Demo strengths
-
-- no paid APIs required
-- no paid telephony required
-- multilingual scenario simulation
-- workflow slot validation
-- live metrics and event timeline
-- presentation-friendly browser call experience
-- one-click sample records for records, analytics, and daily report demos
-
-## Platform capabilities
-
-- reusable agent profile templates for hospital appointments, front desk reception, and education reception
-- guided demo mode with persona, script steps, expected fields, talking points, and evaluator checklist per use case
-- zero-cost seeded records that create sample calls through the same backend orchestration flow
-- dashboard-based customization of prompts, behavior, and required fields per use case
-- validation rules that keep profile configuration aligned with domain-specific data collection
-- structured session records that store collected caller details from each conversation
-- simulator sessions now run the exact selected profile, not just a generic workflow
-- searchable records dashboard with per-session collected data views
-- backend-powered analytics for platform, domain, and profile performance
-- CSV export for collected records during demos and reviews
-- follow-up workflow management with statuses, assignees, and notes per conversation
-- follow-up pipeline analytics for open and resolved tenant records
-- outcome action management for callbacks, appointment confirmations, enquiry forwarding, and visitor routing
-- tenant daily handoff reports with markdown download for operations reviews
-- role-based admin switching for viewer, editor, and admin demo personas
-- profile version history with restore support for safe configuration changes
-- tenant workspaces so each hospital, college, or reception customer has isolated profiles, records, analytics, and admin access
-
-## Multi-tenant flow
-
-- choose a tenant workspace from the dashboard
-- manage that tenant's profiles and admin users
-- run the zero-cost browser demo against that tenant's agent profiles
-- collect structured records and analytics only inside that workspace
-- assign and track tenant-specific follow-up actions directly from the records dashboard
-- capture operational outcomes like scheduled callbacks, booking confirmations, and routed enquiries per session
-- generate a date-based daily report that groups records by follow-up state and outcome state
-- seed realistic demo records for the active tenant before showing records, analytics, and reports
+- No paid telephony and no paid APIs required (real LLM optional, local model works).
+- Real authentication and per-account isolation.
+- Real inbound/outbound calls simulated through the browser, including a genuine two-tab "answer the call" experience.
+- Real prospects, campaigns, and an auto-dialer that collects data and performs operations.
+- Real per-call and real-time analytics, with a downloadable daily handoff report.
+- A professional, monochrome dashboard with a collapsible sidebar and dedicated pages per entity.

@@ -3,46 +3,46 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* shadcn/ui design tokens — warm "sand" surface with a teal primary and amber accent. */
+/* Monochrome design tokens — black, white, and gray shades. */
 :root {
-  --radius: 0.85rem;
+  --radius: 0.7rem;
 
-  --background: #f6f0e6;
-  --foreground: #2d241d;
+  --background: #ffffff;
+  --foreground: #0a0a0a;
 
-  --card: rgba(255, 255, 255, 0.92);
-  --card-foreground: #2d241d;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
 
   --popover: #ffffff;
-  --popover-foreground: #2d241d;
+  --popover-foreground: #0a0a0a;
 
-  --primary: #0f766e;
-  --primary-foreground: #f7fdfb;
+  --primary: #111111;
+  --primary-foreground: #fafafa;
 
-  --secondary: #f3ebde;
-  --secondary-foreground: #44331a;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
 
-  --muted: #efe7d9;
-  --muted-foreground: #6c5d4e;
+  --muted: #f4f4f5;
+  --muted-foreground: #6b7280;
 
-  --accent: #fde6b8;
-  --accent-foreground: #7a3d09;
+  --accent: #e7e7e9;
+  --accent-foreground: #18181b;
 
-  --destructive: #e11d48;
-  --destructive-foreground: #fff1f2;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
 
-  --border: rgba(45, 36, 29, 0.12);
-  --input: rgba(45, 36, 29, 0.16);
-  --ring: #0f766e;
+  --border: rgba(10, 10, 10, 0.1);
+  --input: rgba(10, 10, 10, 0.16);
+  --ring: #111111;
 
-  --sidebar: rgba(255, 255, 255, 0.86);
-  --sidebar-foreground: #2d241d;
-  --sidebar-primary: #0f766e;
-  --sidebar-primary-foreground: #f7fdfb;
-  --sidebar-accent: #e7f3f1;
-  --sidebar-accent-foreground: #115e59;
-  --sidebar-border: rgba(45, 36, 29, 0.1);
-  --sidebar-ring: #0f766e;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #18181b;
+  --sidebar-primary: #111111;
+  --sidebar-primary-foreground: #fafafa;
+  --sidebar-accent: #ececef;
+  --sidebar-accent-foreground: #0a0a0a;
+  --sidebar-border: rgba(10, 10, 10, 0.08);
+  --sidebar-ring: #111111;
 }
 
 @theme inline {
@@ -91,10 +91,7 @@
     margin: 0;
     min-height: 100vh;
     color: var(--foreground);
-    background:
-      radial-gradient(circle at top left, rgba(15, 118, 110, 0.14), transparent 30%),
-      radial-gradient(circle at bottom right, rgba(217, 119, 6, 0.14), transparent 26%),
-      linear-gradient(135deg, #efe6d7 0%, #f9f4ec 48%, #efe7d9 100%);
+    background: linear-gradient(180deg, #ffffff 0%, #f6f6f7 100%);
     background-attachment: fixed;
     font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -105,5 +102,6 @@
 }
 
 .font-display {
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: "Inter Tight", "Inter", system-ui, sans-serif;
+  letter-spacing: -0.01em;
 }

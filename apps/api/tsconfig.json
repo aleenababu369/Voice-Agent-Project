@@ -3,7 +3,8 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "../../",
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "exactOptionalPropertyTypes": false
   },
   "include": ["src/**/*.ts", "../../packages/contracts/src/**/*.ts"]
 }

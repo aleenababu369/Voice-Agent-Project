@@ -57,15 +57,15 @@ export function StatTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function QualityBar({ label, value, tone }: { label: string; value: number; tone: "emerald" | "teal" | "amber" }) {
-  const barTone = tone === "emerald" ? "bg-emerald-500" : tone === "amber" ? "bg-amber-500" : "bg-primary";
+export function QualityBar({ label, value, tone }: { label: string; value: number; tone?: "emerald" | "teal" | "amber" }) {
+  const barTone = tone === "amber" ? "bg-zinc-400" : tone === "emerald" ? "bg-zinc-700" : "bg-primary";
   return (
     <div>
       <div className="mb-1 flex items-center justify-between text-sm text-muted-foreground">
         <span>{label}</span>
         <span>{value}%</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white">
+      <div className="h-2 overflow-hidden rounded-full bg-secondary">
         <div className={cn("h-full rounded-full", barTone)} style={{ width: `${Math.max(6, Math.min(100, value))}%` }} />
       </div>
     </div>
