@@ -68,7 +68,7 @@ function normalizeProfileSlots(slots: AgentProfileSlotInput[]): SlotDefinition[]
     : { key: slot.key, label: slot.label, prompt: slot.prompt, required: slot.required });
 }
 
-const tenants: Tenant[] = [
+const seedTenants: Tenant[] = [
   {
     id: "city-hospital",
     name: "City Hospital",
@@ -166,7 +166,7 @@ const agentProfileTemplates: AgentProfileTemplate[] = [
   }
 ];
 
-const adminUsers: AdminUser[] = [
+const seedAdminUsers: AdminUser[] = [
   { id: "platform-admin", name: "Priya Menon", role: "admin", scope: "all", tenantId: "all" },
   { id: "ops-editor", name: "Rahul S", role: "editor", scope: "all", tenantId: "all" },
   { id: "city-hospital-editor", name: "Asha Clinic Ops", role: "editor", scope: "healthcare", tenantId: "city-hospital" },
@@ -178,7 +178,7 @@ function cloneSlots(slots: SlotDefinition[]) {
   return slots.map((slot) => slot.examples ? { ...slot, examples: [...slot.examples] } : { ...slot });
 }
 
-function buildProfileFromTemplate(template: AgentProfileTemplate, tenantId: string, customName?: string): AgentProfile {
+function buildProfileFromTemplate(template: AgentProfileTemplate, tenantId: string, customName?: string, status: AgentProfile["status"] = "deployed"): AgentProfile {
   const timestamp = now();
   const tenantSlug = tenantId.replace(/[^a-z0-9]+/g, "-");
   return {
@@ -194,15 +194,28 @@ function buildProfileFromTemplate(template: AgentProfileTemplate, tenantId: stri
     completionMessageTemplate: template.completionMessageTemplate,
     escalationMessage: template.escalationMessage,
     slots: cloneSlots(template.slots),
+    status,
+    ...(status === "deployed" ? { deployedAt: timestamp } : {}),
     createdAt: timestamp,
     updatedAt: timestamp
   };
 }
 
+export interface RegisterTenantInput {
+  name: string;
+  description: string;
+  domainFocus: Domain;
+  adminContactName?: string | undefined;
+  adminContactEmail?: string | undefined;
+  useCaseTemplateId?: string | undefined;
+}
+
 class AgentProfileService {
   private readonly profiles = new Map<string, AgentProfile>();
   private readonly versions = new Map<string, AgentProfileVersion[]>();
-  private readonly defaultTenantId = tenants[0]!.id;
+  private readonly tenants: Tenant[] = [...seedTenants];
+  private readonly adminUsers: AdminUser[] = [...seedAdminUsers];
+  private readonly defaultTenantId = seedTenants[0]!.id;
 
   constructor() {
     const seededProfiles = [
@@ -213,7 +226,7 @@ class AgentProfileService {
 
     for (const profile of seededProfiles) {
       this.profiles.set(profile.id, profile);
-      this.versions.set(profile.id, [this.createVersionSnapshot(profile, adminUsers[0]!, "Initial tenant profile seed")]);
+      this.versions.set(profile.id, [this.createVersionSnapshot(profile, this.adminUsers[0]!, "Initial tenant profile seed")]);
     }
   }
 
@@ -222,14 +235,75 @@ class AgentProfileService {
   }
 
   listTenants() {
-    return tenants;
+    return this.tenants;
   }
 
   getTenant(id?: string) {
     const tenantId = id ?? this.defaultTenantId;
-    const tenant = tenants.find((item) => item.id === tenantId);
+    const tenant = this.tenants.find((item) => item.id === tenantId);
     if (!tenant) throw new Error(`Tenant not found: ${tenantId}`);
     return tenant;
+  }
+
+  registerTenant(input: RegisterTenantInput) {
+    const name = input.name.trim();
+    if (name.length < 2) throw new AgentProfileValidationError(["Workspace name must be at least 2 characters."]);
+    const baseSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "workspace";
+    let slug = baseSlug;
+    let suffix = 2;
+    while (this.tenants.some((tenant) => tenant.id === slug)) slug = `${baseSlug}-${suffix++}`;
+
+    const timestamp = now();
+    const tenant: Tenant = {
+      id: slug,
+      name,
+      description: input.description.trim() || `${name} workspace`,
+      domainFocus: input.domainFocus,
+      ...(input.adminContactName ? { adminContactName: input.adminContactName } : {}),
+      ...(input.adminContactEmail ? { adminContactEmail: input.adminContactEmail } : {}),
+      createdAt: timestamp
+    };
+    this.tenants.push(tenant);
+
+    const adminUser: AdminUser = {
+      id: `${slug}-admin`,
+      name: input.adminContactName?.trim() || `${name} Admin`,
+      role: "admin",
+      scope: input.domainFocus,
+      tenantId: slug
+    };
+    this.adminUsers.push(adminUser);
+
+    const template = (input.useCaseTemplateId
+      ? agentProfileTemplates.find((item) => item.id === input.useCaseTemplateId)
+      : agentProfileTemplates.find((item) => item.domain === input.domainFocus))
+      ?? agentProfileTemplates.find((item) => item.domain === input.domainFocus)
+      ?? agentProfileTemplates[0]!;
+
+    const profile = buildProfileFromTemplate(template, slug, `${name} Agent`, "draft");
+    this.profiles.set(profile.id, profile);
+    this.versions.set(profile.id, [this.createVersionSnapshot(profile, adminUser, "Workspace provisioned")]);
+
+    return { tenant, adminUser, profile };
+  }
+
+  setDeployment(profileId: string, deployed: boolean, actorId: string, tenantId?: string) {
+    const existing = this.get(profileId, tenantId);
+    const actor = this.assertCanEdit(actorId, existing.domain, existing.tenantId);
+    const timestamp = now();
+    const profile: AgentProfile = {
+      ...existing,
+      status: deployed ? "deployed" : "draft",
+      ...(deployed ? { deployedAt: timestamp } : {}),
+      updatedAt: timestamp
+    };
+    this.profiles.set(profileId, profile);
+    this.appendVersion(profile, actor, deployed ? "Profile deployed" : "Profile undeployed");
+    return profile;
+  }
+
+  isDeployed(profile: AgentProfile) {
+    return profile.status !== "draft";
   }
 
   list(tenantId?: string) {
@@ -245,11 +319,11 @@ class AgentProfileService {
   listUsers(tenantId?: string) {
     const scopedTenantId = tenantId ?? this.defaultTenantId;
     this.getTenant(scopedTenantId);
-    return adminUsers.filter((user) => user.tenantId === "all" || user.tenantId === scopedTenantId);
+    return this.adminUsers.filter((user) => user.tenantId === "all" || user.tenantId === scopedTenantId);
   }
 
   getUser(id: string, tenantId?: string) {
-    const user = adminUsers.find((item) => item.id === id);
+    const user = this.adminUsers.find((item) => item.id === id);
     if (!user) throw new Error(`Admin user not found: ${id}`);
     if (tenantId && user.tenantId !== "all" && user.tenantId !== tenantId) {
       throw new AgentProfileAccessError(user.role, `This user cannot manage tenant ${tenantId}.`);
@@ -333,7 +407,8 @@ class AgentProfileService {
 
   findByWorkflow(workflow: WorkflowType, domain: Domain, tenantId?: string) {
     const scopedTenantId = tenantId ?? this.defaultTenantId;
-    return this.list(scopedTenantId).find((profile) => profile.workflow === workflow && profile.domain === domain) ?? null;
+    const matches = this.list(scopedTenantId).filter((profile) => profile.workflow === workflow && profile.domain === domain);
+    return matches.find((profile) => this.isDeployed(profile)) ?? matches[0] ?? null;
   }
 
   private assertCanEdit(actorId: string, profileDomain: Domain, tenantId: string) {

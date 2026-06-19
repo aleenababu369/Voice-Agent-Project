@@ -1,6 +1,6 @@
 import { buildApp } from "./app.ts";
 
-const port = Number(process.env.PORT ?? 8080);
+const port = Number(process.env.PORT ?? 5005);
 const host = process.env.HOST ?? "0.0.0.0";
 
 const app = buildApp();

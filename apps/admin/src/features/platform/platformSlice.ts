@@ -6,11 +6,26 @@ import type {
   AgentProfileDto,
   AgentProfileTemplateDto,
   AgentProfileVersionDto,
+  ContactDto,
+  DomainDto,
   FollowUpStatusDto,
+  OperationDto,
+  OperationStatusDto,
   PlatformAnalyticsDto,
+  Screen,
+  SessionOutcomeTypeDto,
   SessionRecordDto,
+  TenantDailyReportDto,
   TenantDto
 } from "./types";
+
+function extractError(error: unknown, fallback: string) {
+  if (error && typeof error === "object" && "response" in error) {
+    const data = (error as { response?: { data?: { issues?: string[]; error?: string } } }).response?.data;
+    return data?.issues?.join(" ") ?? data?.error ?? fallback;
+  }
+  return fallback;
+}
 
 interface PlatformState {
   tenants: TenantDto[];
@@ -19,12 +34,17 @@ interface PlatformState {
   users: AdminUserDto[];
   versions: AgentProfileVersionDto[];
   sessions: SessionRecordDto[];
+  operations: OperationDto[];
+  contacts: ContactDto[];
   analytics: PlatformAnalyticsDto | null;
+  dailyReport: TenantDailyReportDto | null;
+  activeScreen: Screen;
   selectedTenantId: string | null;
   selectedProfileId: string | null;
   selectedActorId: string | null;
   loading: boolean;
   error: string | null;
+  notice: string | null;
 }
 
 const initialState: PlatformState = {
@@ -34,12 +54,17 @@ const initialState: PlatformState = {
   users: [],
   versions: [],
   sessions: [],
+  operations: [],
+  contacts: [],
   analytics: null,
+  dailyReport: null,
+  activeScreen: "home",
   selectedTenantId: null,
   selectedProfileId: null,
   selectedActorId: null,
   loading: false,
-  error: null
+  error: null,
+  notice: null
 };
 
 const selectApiBaseUrl = (state: RootState) => state.demo.apiBaseUrl;
@@ -93,6 +118,95 @@ export const fetchAnalytics = createAsyncThunk("platform/fetchAnalytics", async 
   return response.data;
 });
 
+export const fetchDailyReport = createAsyncThunk("platform/fetchDailyReport", async (date: string | undefined, { getState }) => {
+  const state = getState() as RootState;
+  const api = createApiClient(selectApiBaseUrl(state));
+  const response = await api.get<TenantDailyReportDto>("/v1/platform/reports/daily", {
+    params: { tenantId: selectTenantId(state), ...(date ? { date } : {}) }
+  });
+  return response.data;
+});
+
+export const registerWorkspace = createAsyncThunk(
+  "platform/registerWorkspace",
+  async (
+    input: { name: string; description: string; domainFocus: DomainDto; useCaseTemplateId?: string; adminContactName?: string },
+    { getState, dispatch, rejectWithValue }
+  ) => {
+    const api = createApiClient(selectApiBaseUrl(getState() as RootState));
+    try {
+      const response = await api.post<{ tenant: TenantDto; profile: AgentProfileDto }>("/v1/tenants", input);
+      await dispatch(fetchTenants());
+      dispatch(selectTenant(response.data.tenant.id));
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(extractError(error, "Unable to register workspace."));
+    }
+  }
+);
+
+export const deployProfile = createAsyncThunk(
+  "platform/deployProfile",
+  async ({ profileId, deployed }: { profileId: string; deployed: boolean }, { getState, dispatch, rejectWithValue }) => {
+    const state = getState() as RootState;
+    const api = createApiClient(selectApiBaseUrl(state));
+    try {
+      const response = await api.post<{ profile: AgentProfileDto; versions: AgentProfileVersionDto[] }>(
+        `/v1/agent-profiles/${profileId}/deploy`,
+        { actorId: selectActorId(state), tenantId: selectTenantId(state), deployed }
+      );
+      await dispatch(fetchProfiles());
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(extractError(error, "Unable to update deployment."));
+    }
+  }
+);
+
+export const fetchOperations = createAsyncThunk("platform/fetchOperations", async (_, { getState }) => {
+  const state = getState() as RootState;
+  const api = createApiClient(selectApiBaseUrl(state));
+  const response = await api.get<{ operations: OperationDto[] }>("/v1/operations", { params: { tenantId: selectTenantId(state) } });
+  return response.data.operations;
+});
+
+export const updateOperation = createAsyncThunk(
+  "platform/updateOperation",
+  async ({ operationId, status }: { operationId: string; status: OperationStatusDto }, { getState, dispatch, rejectWithValue }) => {
+    const state = getState() as RootState;
+    const api = createApiClient(selectApiBaseUrl(state));
+    try {
+      const response = await api.put<{ operation: OperationDto }>(`/v1/operations/${operationId}/status`, { status });
+      await dispatch(fetchOperations());
+      return response.data.operation;
+    } catch (error) {
+      return rejectWithValue(extractError(error, "Unable to update operation."));
+    }
+  }
+);
+
+export const fetchContacts = createAsyncThunk("platform/fetchContacts", async (_, { getState }) => {
+  const state = getState() as RootState;
+  const api = createApiClient(selectApiBaseUrl(state));
+  const response = await api.get<{ contacts: ContactDto[] }>(`/v1/tenants/${selectTenantId(state)}/contacts`);
+  return response.data.contacts;
+});
+
+export const createContact = createAsyncThunk(
+  "platform/createContact",
+  async (input: { name: string; phoneNumber: string; notes?: string }, { getState, dispatch, rejectWithValue }) => {
+    const state = getState() as RootState;
+    const api = createApiClient(selectApiBaseUrl(state));
+    try {
+      const response = await api.post<{ contact: ContactDto }>(`/v1/tenants/${selectTenantId(state)}/contacts`, input);
+      await dispatch(fetchContacts());
+      return response.data.contact;
+    } catch (error) {
+      return rejectWithValue(extractError(error, "Unable to add contact."));
+    }
+  }
+);
+
 export const updateSessionFollowUp = createAsyncThunk(
   "platform/updateSessionFollowUp",
   async ({ sessionId, status, assignee, notes }: { sessionId: string; status: FollowUpStatusDto; assignee?: string; notes?: string }, { getState, dispatch, rejectWithValue }) => {
@@ -111,6 +225,30 @@ export const updateSessionFollowUp = createAsyncThunk(
       const message = error && typeof error === "object" && "response" in error
         ? ((error as { response?: { data?: { error?: string } } }).response?.data?.error ?? "Unable to update follow-up.")
         : "Unable to update follow-up.";
+      return rejectWithValue(message);
+    }
+  }
+);
+
+export const updateSessionOutcome = createAsyncThunk(
+  "platform/updateSessionOutcome",
+  async ({ sessionId, type, scheduledFor, referenceId, notes }: { sessionId: string; type: SessionOutcomeTypeDto; scheduledFor?: string; referenceId?: string; notes?: string }, { getState, dispatch, rejectWithValue }) => {
+    const state = getState() as RootState;
+    const api = createApiClient(selectApiBaseUrl(state));
+
+    try {
+      const response = await api.put<{ session: SessionRecordDto }>(`/v1/calls/session/${sessionId}/outcome`, {
+        type,
+        ...(scheduledFor ? { scheduledFor } : {}),
+        ...(referenceId ? { referenceId } : {}),
+        ...(notes ? { notes } : {})
+      });
+      await Promise.all([dispatch(fetchSessions()), dispatch(fetchAnalytics())]);
+      return response.data.session;
+    } catch (error) {
+      const message = error && typeof error === "object" && "response" in error
+        ? ((error as { response?: { data?: { error?: string } } }).response?.data?.error ?? "Unable to update outcome.")
+        : "Unable to update outcome.";
       return rejectWithValue(message);
     }
   }
@@ -161,6 +299,9 @@ const platformSlice = createSlice({
   name: "platform",
   initialState,
   reducers: {
+    setActiveScreen(state, action: PayloadAction<Screen>) {
+      state.activeScreen = action.payload;
+    },
     selectProfile(state, action: PayloadAction<string | null>) {
       state.selectedProfileId = action.payload;
       if (!action.payload) state.versions = [];
@@ -174,10 +315,16 @@ const platformSlice = createSlice({
       state.selectedActorId = null;
       state.versions = [];
       state.sessions = [];
+      state.operations = [];
+      state.contacts = [];
       state.analytics = null;
+      state.dailyReport = null;
     },
     clearPlatformError(state) {
       state.error = null;
+    },
+    clearPlatformNotice(state) {
+      state.notice = null;
     }
   },
   extraReducers: (builder) => {
@@ -215,8 +362,43 @@ const platformSlice = createSlice({
       .addCase(fetchAnalytics.fulfilled, (state, action) => {
         state.analytics = action.payload;
       })
+      .addCase(fetchDailyReport.fulfilled, (state, action) => {
+        state.dailyReport = action.payload;
+      })
+      .addCase(fetchOperations.fulfilled, (state, action) => {
+        state.operations = action.payload;
+      })
+      .addCase(fetchContacts.fulfilled, (state, action) => {
+        state.contacts = action.payload;
+      })
+      .addCase(registerWorkspace.fulfilled, (state, action) => {
+        state.error = null;
+        state.notice = `Workspace "${action.payload.tenant.name}" created. A starter agent is ready to customize and deploy.`;
+        state.activeScreen = "build";
+      })
+      .addCase(registerWorkspace.rejected, (state, action) => {
+        state.error = (typeof action.payload === "string" ? action.payload : action.error.message) ?? "Unable to register workspace.";
+      })
+      .addCase(deployProfile.fulfilled, (state, action) => {
+        state.selectedProfileId = action.payload.profile.id;
+        state.versions = action.payload.versions;
+        state.error = null;
+        state.notice = action.payload.profile.status === "deployed" ? "Agent deployed. It can now take calls." : "Agent moved back to draft.";
+      })
+      .addCase(deployProfile.rejected, (state, action) => {
+        state.error = (typeof action.payload === "string" ? action.payload : action.error.message) ?? "Unable to update deployment.";
+      })
+      .addCase(updateOperation.rejected, (state, action) => {
+        state.error = (typeof action.payload === "string" ? action.payload : action.error.message) ?? "Unable to update operation.";
+      })
+      .addCase(createContact.rejected, (state, action) => {
+        state.error = (typeof action.payload === "string" ? action.payload : action.error.message) ?? "Unable to add contact.";
+      })
       .addCase(updateSessionFollowUp.rejected, (state, action) => {
         state.error = (typeof action.payload === "string" ? action.payload : action.error.message) ?? "Unable to update follow-up.";
+      })
+      .addCase(updateSessionOutcome.rejected, (state, action) => {
+        state.error = (typeof action.payload === "string" ? action.payload : action.error.message) ?? "Unable to update outcome.";
       })
       .addCase(saveProfile.fulfilled, (state, action) => {
         state.selectedProfileId = action.payload.profile.id;
@@ -237,5 +419,5 @@ const platformSlice = createSlice({
   }
 });
 
-export const { selectProfile, selectActor, selectTenant, clearPlatformError } = platformSlice.actions;
+export const { setActiveScreen, selectProfile, selectActor, selectTenant, clearPlatformError, clearPlatformNotice } = platformSlice.actions;
 export default platformSlice.reducer;

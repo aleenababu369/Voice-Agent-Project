@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { agentProfileSchema, createSessionSchema, consentSchema, processTurnSchema } from "../schemas/call.schemas.ts";
+import { agentProfileSchema, createContactSchema, createSessionSchema, consentSchema, deploymentSchema, processTurnSchema, registerTenantSchema, updateOperationStatusSchema } from "../schemas/call.schemas.ts";
 import { AgentProfileAccessError, AgentProfileValidationError } from "../services/agent-profile.service.ts";
+import { operationLabel, operationTypeForWorkflow, outcomeTypeForOperation } from "../services/operations.helper.ts";
 import { randomUUID } from "node:crypto";
 
 const actorProfileSchema = z.object({ actorId: z.string().min(1), tenantId: z.string().min(1).optional(), profile: agentProfileSchema });
@@ -9,6 +10,12 @@ const restoreVersionSchema = z.object({ actorId: z.string().min(1), tenantId: z.
 const followUpSchema = z.object({
   status: z.enum(["new", "in_progress", "contacted", "resolved", "closed"]),
   assignee: z.string().trim().optional(),
+  notes: z.string().trim().optional()
+});
+const outcomeSchema = z.object({
+  type: z.enum(["none", "callback_scheduled", "appointment_confirmed", "enquiry_forwarded", "visitor_routed", "closed_no_action"]),
+  scheduledFor: z.string().trim().optional(),
+  referenceId: z.string().trim().optional(),
   notes: z.string().trim().optional()
 });
 
@@ -36,6 +43,52 @@ function sendProfileError(reply: { code: (statusCode: number) => { send: (body: 
 
 export function registerCallRoutes(app: FastifyInstance) {
   app.get("/v1/tenants", async () => ({ tenants: app.services.agentProfiles.listTenants() }));
+
+  app.post("/v1/tenants", async (request, reply) => {
+    const body = registerTenantSchema.parse(request.body);
+    try {
+      const result = app.services.agentProfiles.registerTenant(body);
+      return reply.code(201).send(result);
+    } catch (error) {
+      return sendProfileError(reply, error);
+    }
+  });
+
+  app.get("/v1/tenants/:tenantId/contacts", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    try {
+      app.services.agentProfiles.getTenant(tenantId);
+    } catch {
+      return reply.code(404).send({ error: "Tenant not found" });
+    }
+    return { contacts: await app.services.persistence.listContacts(tenantId) };
+  });
+
+  app.post("/v1/tenants/:tenantId/contacts", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    try {
+      app.services.agentProfiles.getTenant(tenantId);
+    } catch {
+      return reply.code(404).send({ error: "Tenant not found" });
+    }
+    const body = createContactSchema.parse(request.body);
+    const contact = await app.services.persistence.createContact(tenantId, body);
+    return reply.code(201).send({ contact });
+  });
+
+  app.get("/v1/operations", async (request) => {
+    const { tenantId } = request.query as { tenantId?: string };
+    const scopedTenantId = tenantId ?? app.services.agentProfiles.getDefaultTenantId();
+    return { operations: await app.services.persistence.listOperations(scopedTenantId) };
+  });
+
+  app.put("/v1/operations/:operationId/status", async (request, reply) => {
+    const { operationId } = request.params as { operationId: string };
+    const body = updateOperationStatusSchema.parse(request.body);
+    const updated = await app.services.persistence.updateOperationStatus(operationId, body.status);
+    if (!updated) return reply.code(404).send({ error: "Operation not found" });
+    return { operation: updated };
+  });
 
   app.get("/v1/admin/users", async (request) => {
     const { tenantId } = request.query as { tenantId?: string };
@@ -109,6 +162,20 @@ export function registerCallRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/v1/agent-profiles/:profileId/deploy", async (request, reply) => {
+    const { profileId } = request.params as { profileId: string };
+    const body = deploymentSchema.parse(request.body);
+    try {
+      const profile = app.services.agentProfiles.setDeployment(profileId, body.deployed, body.actorId, body.tenantId);
+      return { profile, versions: app.services.agentProfiles.listVersions(profile.id, profile.tenantId) };
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Agent profile not found")) {
+        return reply.code(404).send({ error: "Agent profile not found" });
+      }
+      return sendProfileError(reply, error);
+    }
+  });
+
   app.get("/v1/calls/sessions", async (request) => {
     const { tenantId } = request.query as { tenantId?: string };
     return { sessions: await app.services.persistence.listSessions(tenantId) };
@@ -121,7 +188,20 @@ export function registerCallRoutes(app: FastifyInstance) {
       ? app.services.agentProfiles.get(body.profileId, body.tenantId)
       : app.services.agentProfiles.findByWorkflow(body.workflow!, body.domain!, requestedTenantId);
     if (!profile) return reply.code(400).send({ error: "No matching agent profile found" });
-    const participant = body.displayName ? { phoneNumber: body.phoneNumber, displayName: body.displayName } : { phoneNumber: body.phoneNumber };
+    if (!app.services.agentProfiles.isDeployed(profile)) {
+      return reply.code(409).send({ error: "Agent is not deployed. Deploy the agent before taking calls." });
+    }
+
+    let phoneNumber = body.phoneNumber;
+    let displayName = body.displayName;
+    if (body.contactId) {
+      const contact = await app.services.persistence.getContact(body.contactId);
+      if (!contact) return reply.code(404).send({ error: "Contact not found" });
+      phoneNumber = contact.phoneNumber;
+      displayName = contact.name;
+    }
+
+    const participant = displayName ? { phoneNumber, displayName } : { phoneNumber };
     const required = profile.slots.filter((slot) => slot.required).map((slot) => slot.key);
     const session = await app.services.persistence.createSession({
       id: randomUUID(),
@@ -130,6 +210,8 @@ export function registerCallRoutes(app: FastifyInstance) {
       domain: profile.domain,
       workflow: profile.workflow,
       language: body.language,
+      direction: body.direction,
+      ...(body.contactId ? { contactId: body.contactId } : {}),
       participant,
       slotState: { required, collected: {}, missing: [...required] }
     });
@@ -161,6 +243,16 @@ export function registerCallRoutes(app: FastifyInstance) {
     return { session: updated };
   });
 
+  app.put("/v1/calls/session/:sessionId/outcome", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const body = outcomeSchema.parse(request.body);
+    const session = await app.services.persistence.getSession(sessionId);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const updated = await app.services.persistence.updateOutcome(sessionId, { type: body.type, ...(body.scheduledFor ? { scheduledFor: body.scheduledFor } : {}), ...(body.referenceId ? { referenceId: body.referenceId } : {}), ...(body.notes ? { notes: body.notes } : {}) });
+    if (!updated) return reply.code(500).send({ error: "Unable to update outcome" });
+    return { session: updated };
+  });
+
   app.post("/v1/calls/session/:sessionId/consent", async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };
     const body = consentSchema.parse(request.body);
@@ -169,6 +261,13 @@ export function registerCallRoutes(app: FastifyInstance) {
     const updated = await app.services.persistence.captureConsent(sessionId, body.consentGranted);
     if (!updated) return reply.code(500).send({ error: "Unable to update consent" });
     return { session: updated, message: body.consentGranted ? "Consent captured. The workflow can proceed." : "Consent denied. This call should be handed to a human or ended." };
+  });
+
+  app.get("/v1/calls/session/:sessionId/operations", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const session = await app.services.persistence.getSession(sessionId);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    return { sessionId, operations: await app.services.persistence.listOperationsBySession(sessionId) };
   });
 
   app.post("/v1/calls/session/:sessionId/turn", async (request, reply) => {
@@ -181,7 +280,29 @@ export function registerCallRoutes(app: FastifyInstance) {
     const result = await app.services.orchestrator.processTurn({ session, transcript: body.transcript, asrConfidence: body.asrConfidence, nluConfidence: body.nluConfidence, workflow: app.services.workflows.get(session.workflow), profile });
     const updatedSession = await app.services.persistence.applyTurn(sessionId, body.transcript, result);
     await app.services.persistence.recordMetric({ sessionId, turnSwitchLatencyMs: body.turnSwitchLatencyMs, asrConfidence: body.asrConfidence, nluConfidence: body.nluConfidence, workflowCompleted: result.decision.action === "complete_call", escalated: result.decision.action === "escalate_to_human" });
-    return { decision: result.decision, session: updatedSession, profile, workflow: { type: session.workflow, completionReady: result.allSlotsCollected, missingSlots: result.missingSlots, collectedData: updatedSession?.slotState.collected ?? {} } };
+
+    let operation = null;
+    let responseSession = updatedSession;
+    if (result.decision.action === "complete_call" && updatedSession) {
+      const operationType = operationTypeForWorkflow(updatedSession.workflow);
+      const collected = updatedSession.slotState.collected;
+      const scheduledFor = [collected.preferred_date, collected.preferred_time].filter(Boolean).join(" ") || undefined;
+      operation = await app.services.persistence.createOperation({
+        tenantId: updatedSession.tenantId,
+        sessionId: updatedSession.id,
+        ...(updatedSession.agentProfileId ? { agentProfileId: updatedSession.agentProfileId } : {}),
+        type: operationType,
+        payload: collected,
+        ...(scheduledFor ? { scheduledFor } : {})
+      });
+      responseSession = await app.services.persistence.updateOutcome(updatedSession.id, {
+        type: outcomeTypeForOperation(operationType),
+        referenceId: operation.referenceId,
+        ...(scheduledFor ? { scheduledFor } : {}),
+        notes: `Auto-created ${operationLabel(operationType)} from completed call.`
+      }) ?? updatedSession;
+    }
+
+    return { decision: result.decision, session: responseSession, profile, operation, workflow: { type: session.workflow, completionReady: result.allSlotsCollected, missingSlots: result.missingSlots, collectedData: responseSession?.slotState.collected ?? {} } };
   });
 }
-

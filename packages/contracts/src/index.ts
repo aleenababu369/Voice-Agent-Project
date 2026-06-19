@@ -11,11 +11,16 @@ export type WorkflowType =
 export type LanguageCode = "en-IN" | "hi-IN" | "kn-IN" | "ta-IN" | "ml-IN";
 export type AiProviderKind = "mock" | "openai-compatible" | "faster-whisper" | "coqui";
 
+export type CallDirection = "inbound" | "outbound";
+
 export interface Tenant {
   id: string;
   name: string;
   description: string;
   domainFocus: Domain;
+  adminContactName?: string;
+  adminContactEmail?: string;
+  createdAt?: string;
 }
 
 export type SessionStatus =
@@ -28,6 +33,7 @@ export type SessionStatus =
   | "failed";
 
 export type FollowUpStatus = "new" | "in_progress" | "contacted" | "resolved" | "closed";
+export type SessionOutcomeType = "none" | "callback_scheduled" | "appointment_confirmed" | "enquiry_forwarded" | "visitor_routed" | "closed_no_action";
 
 export interface CallParticipant {
   phoneNumber: string;
@@ -43,6 +49,8 @@ export interface SlotDefinition {
   examples?: string[];
 }
 
+export type AgentDeploymentStatus = "draft" | "deployed";
+
 export interface AgentProfile {
   id: string;
   tenantId: string;
@@ -56,6 +64,42 @@ export interface AgentProfile {
   completionMessageTemplate: string;
   escalationMessage: string;
   slots: SlotDefinition[];
+  /** Optional for backward compatibility: `undefined` is treated as "deployed" for seeded profiles. */
+  status?: AgentDeploymentStatus;
+  deployedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Contact {
+  id: string;
+  tenantId: string;
+  name: string;
+  phoneNumber: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export type OperationType =
+  | "appointment"
+  | "enquiry"
+  | "visitor_routing"
+  | "reminder_ack"
+  | "follow_up"
+  | "generic";
+
+export type OperationStatus = "created" | "scheduled" | "in_progress" | "completed" | "cancelled";
+
+export interface Operation {
+  id: string;
+  tenantId: string;
+  sessionId: string;
+  agentProfileId?: string;
+  type: OperationType;
+  status: OperationStatus;
+  payload: Record<string, string>;
+  referenceId: string;
+  scheduledFor?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -88,6 +132,14 @@ export interface SessionFollowUp {
   updatedAt: string;
 }
 
+export interface SessionOutcome {
+  type: SessionOutcomeType;
+  scheduledFor?: string;
+  referenceId?: string;
+  notes?: string;
+  updatedAt: string;
+}
+
 export interface AiTurnMetadata {
   asrProvider: AiProviderKind;
   llmProvider: AiProviderKind;
@@ -105,10 +157,13 @@ export interface CallSession {
   agentProfileId?: string;
   language: LanguageCode;
   status: SessionStatus;
+  direction: CallDirection;
+  contactId?: string;
   participant: CallParticipant;
   consentCaptured: boolean;
   slotState: CallSlotState;
   followUp: SessionFollowUp;
+  outcome: SessionOutcome;
   turnCount: number;
   lastTranscript?: string;
   escalationSummary?: EscalationSummary;
@@ -150,7 +205,10 @@ export interface CallEvent {
     | "turn_processed"
     | "escalation_triggered"
     | "workflow_completed"
-    | "follow_up_updated";
+    | "follow_up_updated"
+    | "outcome_updated"
+    | "operation_created"
+    | "operation_updated";
   payload: Record<string, unknown>;
   createdAt: string;
 }

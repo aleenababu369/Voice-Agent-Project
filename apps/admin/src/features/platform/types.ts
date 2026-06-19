@@ -1,15 +1,68 @@
+export type DomainDto = "education" | "healthcare" | "frontdesk";
+export type CallDirectionDto = "inbound" | "outbound";
+export type AgentDeploymentStatusDto = "draft" | "deployed";
+
+export type Screen =
+  | "home"
+  | "onboard"
+  | "build"
+  | "assign"
+  | "call"
+  | "records"
+  | "operations"
+  | "analytics"
+  | "settings";
+
 export interface TenantDto {
   id: string;
   name: string;
   description: string;
-  domainFocus: "education" | "healthcare" | "frontdesk";
+  domainFocus: DomainDto;
+  adminContactName?: string;
+  adminContactEmail?: string;
+  createdAt?: string;
+}
+
+export interface ContactDto {
+  id: string;
+  tenantId: string;
+  name: string;
+  phoneNumber: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export type OperationTypeDto = "appointment" | "enquiry" | "visitor_routing" | "reminder_ack" | "follow_up" | "generic";
+export type OperationStatusDto = "created" | "scheduled" | "in_progress" | "completed" | "cancelled";
+
+export interface OperationDto {
+  id: string;
+  tenantId: string;
+  sessionId: string;
+  agentProfileId?: string;
+  type: OperationTypeDto;
+  status: OperationStatusDto;
+  payload: Record<string, string>;
+  referenceId: string;
+  scheduledFor?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type FollowUpStatusDto = "new" | "in_progress" | "contacted" | "resolved" | "closed";
+export type SessionOutcomeTypeDto = "none" | "callback_scheduled" | "appointment_confirmed" | "enquiry_forwarded" | "visitor_routed" | "closed_no_action";
 
 export interface SessionFollowUpDto {
   status: FollowUpStatusDto;
   assignee?: string;
+  notes?: string;
+  updatedAt: string;
+}
+
+export interface SessionOutcomeDto {
+  type: SessionOutcomeTypeDto;
+  scheduledFor?: string;
+  referenceId?: string;
   notes?: string;
   updatedAt: string;
 }
@@ -35,6 +88,8 @@ export interface AgentProfileDto {
   completionMessageTemplate: string;
   escalationMessage: string;
   slots: AgentProfileSlot[];
+  status?: AgentDeploymentStatusDto;
+  deployedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -85,9 +140,12 @@ export interface SessionRecordDto {
   workflow: string;
   status: string;
   language: string;
+  direction: CallDirectionDto;
+  contactId?: string;
   participant: { phoneNumber: string; displayName?: string };
   slotState: { collected: Record<string, string>; missing: string[]; required: string[] };
   followUp: SessionFollowUpDto;
+  outcome: SessionOutcomeDto;
   turnCount: number;
   createdAt: string;
   updatedAt: string;
@@ -101,8 +159,28 @@ export interface PlatformTotalsDto {
   totalCollectedFields: number;
   openFollowUps: number;
   resolvedFollowUps: number;
+  scheduledOutcomes: number;
+  completedOutcomes: number;
   completionRate: number;
   escalationRate: number;
+  totalOperations: number;
+  inboundSessions: number;
+  outboundSessions: number;
+}
+
+export interface OperationTypeAnalyticsDto {
+  type: OperationTypeDto;
+  total: number;
+}
+
+export interface OperationStatusAnalyticsDto {
+  status: OperationStatusDto;
+  total: number;
+}
+
+export interface ChannelMixDto {
+  inbound: number;
+  outbound: number;
 }
 
 export interface DomainAnalyticsDto {
@@ -115,6 +193,11 @@ export interface DomainAnalyticsDto {
 
 export interface FollowUpStatusAnalyticsDto {
   status: FollowUpStatusDto;
+  totalSessions: number;
+}
+
+export interface OutcomeTypeAnalyticsDto {
+  type: SessionOutcomeTypeDto;
   totalSessions: number;
 }
 
@@ -137,5 +220,50 @@ export interface PlatformAnalyticsDto {
   totals: PlatformTotalsDto;
   domains: DomainAnalyticsDto[];
   followUpStatuses: FollowUpStatusAnalyticsDto[];
+  outcomeTypes: OutcomeTypeAnalyticsDto[];
+  operationTypes: OperationTypeAnalyticsDto[];
+  operationStatuses: OperationStatusAnalyticsDto[];
+  channelMix: ChannelMixDto;
   profiles: ProfileAnalyticsDto[];
+}
+
+export interface DailyReportRecordDto {
+  sessionId: string;
+  profileName: string;
+  domain: string;
+  workflow: string;
+  status: string;
+  caller: string;
+  phoneNumber: string;
+  followUpStatus: FollowUpStatusDto;
+  assignee: string | null;
+  followUpNotes: string | null;
+  outcomeType: SessionOutcomeTypeDto;
+  scheduledFor: string | null;
+  referenceId: string | null;
+  outcomeNotes: string | null;
+  collected: Record<string, string>;
+  missing: string[];
+  createdAt: string;
+}
+
+export interface TenantDailyReportDto {
+  tenant: TenantDto;
+  date: string;
+  generatedAt: string;
+  totals: {
+    totalSessions: number;
+    completedSessions: number;
+    escalatedSessions: number;
+    openFollowUps: number;
+    scheduledOutcomes: number;
+    completedOutcomes: number;
+    totalCollectedFields: number;
+  };
+  followUpGroups: FollowUpStatusAnalyticsDto[];
+  outcomeGroups: OutcomeTypeAnalyticsDto[];
+  channelMix: ChannelMixDto;
+  operations: OperationDto[];
+  records: DailyReportRecordDto[];
+  markdown: string;
 }

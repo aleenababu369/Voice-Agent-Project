@@ -1,5 +1,103 @@
 import type { FastifyInstance } from "fastify";
 
+const followUpStatusList = ["new", "in_progress", "contacted", "resolved", "closed"] as const;
+const outcomeTypeList = ["none", "callback_scheduled", "appointment_confirmed", "enquiry_forwarded", "visitor_routed", "closed_no_action"] as const;
+
+function formatLabel(value: string) {
+  return value.replace(/_/g, " ");
+}
+
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function buildMarkdownReport(input: {
+  tenantName: string;
+  date: string;
+  totals: {
+    totalSessions: number;
+    completedSessions: number;
+    escalatedSessions: number;
+    openFollowUps: number;
+    scheduledOutcomes: number;
+    completedOutcomes: number;
+    totalCollectedFields: number;
+  };
+  followUpGroups: Array<{ status: string; totalSessions: number }>;
+  outcomeGroups: Array<{ type: string; totalSessions: number }>;
+  channelMix: { inbound: number; outbound: number };
+  operations: Array<{ type: string; status: string; referenceId: string; scheduledFor?: string }>;
+  records: Array<{
+    sessionId: string;
+    profileName: string;
+    domain: string;
+    workflow: string;
+    caller: string;
+    phoneNumber: string;
+    followUpStatus: string;
+    outcomeType: string;
+    scheduledFor?: string;
+    referenceId?: string;
+    collected: Record<string, string>;
+  }>;
+}) {
+  const lines = [
+    `# Daily Handoff Report - ${input.tenantName}`,
+    "",
+    `Date: ${input.date}`,
+    "",
+    "## Summary",
+    "",
+    `- Total sessions: ${input.totals.totalSessions}`,
+    `- Completed sessions: ${input.totals.completedSessions}`,
+    `- Escalated sessions: ${input.totals.escalatedSessions}`,
+    `- Open follow-ups: ${input.totals.openFollowUps}`,
+    `- Scheduled outcomes: ${input.totals.scheduledOutcomes}`,
+    `- Completed outcomes: ${input.totals.completedOutcomes}`,
+    `- Collected fields: ${input.totals.totalCollectedFields}`,
+    "",
+    "## Follow-Up Pipeline",
+    "",
+    ...input.followUpGroups.map((item) => `- ${formatLabel(item.status)}: ${item.totalSessions}`),
+    "",
+    "## Outcome Mix",
+    "",
+    ...input.outcomeGroups.map((item) => `- ${formatLabel(item.type)}: ${item.totalSessions}`),
+    "",
+    "## Channel Mix",
+    "",
+    `- Inbound: ${input.channelMix.inbound}`,
+    `- Outbound: ${input.channelMix.outbound}`,
+    "",
+    "## Operations",
+    "",
+    ...(input.operations.length === 0
+      ? ["No operations recorded for this date."]
+      : input.operations.map((item) => `- ${formatLabel(item.type)} ${item.referenceId} (${formatLabel(item.status)})${item.scheduledFor ? ` scheduled for ${item.scheduledFor}` : ""}`)),
+    "",
+    "## Records",
+    ""
+  ];
+
+  if (input.records.length === 0) {
+    lines.push("No sessions found for this date.");
+    return lines.join("\n");
+  }
+
+  for (const record of input.records) {
+    const collected = Object.entries(record.collected).map(([key, value]) => `${key}: ${value}`).join("; ") || "No collected fields";
+    lines.push(`- ${record.profileName} (${record.domain}/${record.workflow})`);
+    lines.push(`  Caller: ${record.caller} | ${record.phoneNumber}`);
+    lines.push(`  Follow-up: ${formatLabel(record.followUpStatus)} | Outcome: ${formatLabel(record.outcomeType)}`);
+    if (record.scheduledFor) lines.push(`  Scheduled for: ${record.scheduledFor}`);
+    if (record.referenceId) lines.push(`  Reference: ${record.referenceId}`);
+    lines.push(`  Collected: ${collected}`);
+    lines.push(`  Session: ${record.sessionId}`);
+  }
+
+  return lines.join("\n");
+}
+
 export function registerSystemRoutes(app: FastifyInstance) {
   app.get("/health", async () => ({
     status: "ok",
@@ -23,7 +121,14 @@ export function registerSystemRoutes(app: FastifyInstance) {
       "profile_templates",
       "records_analytics",
       "multi_tenant_workspaces",
-      "follow_up_operations"
+      "follow_up_operations",
+      "tenant_outcome_actions",
+      "guided_demo_script",
+      "zero_cost_seed_records",
+      "dynamic_tenant_registration",
+      "agent_deployment",
+      "inbound_outbound_calls",
+      "role_based_operations"
     ]
   }));
 
@@ -44,6 +149,7 @@ export function registerSystemRoutes(app: FastifyInstance) {
     const { tenantId } = request.query as { tenantId?: string };
     const tenant = app.services.agentProfiles.getTenant(tenantId);
     const sessions = await app.services.persistence.listSessions(tenant.id);
+    const operations = await app.services.persistence.listOperations(tenant.id);
     const profiles = app.services.agentProfiles.list(tenant.id);
 
     const totalSessions = sessions.length;
@@ -53,6 +159,8 @@ export function registerSystemRoutes(app: FastifyInstance) {
     const totalCollectedFields = sessions.reduce((sum, session) => sum + Object.keys(session.slotState.collected).length, 0);
     const openFollowUps = sessions.filter((session) => ["new", "in_progress", "contacted"].includes(session.followUp.status)).length;
     const resolvedFollowUps = sessions.filter((session) => ["resolved", "closed"].includes(session.followUp.status)).length;
+    const scheduledOutcomes = sessions.filter((session) => ["callback_scheduled", "appointment_confirmed"].includes(session.outcome.type)).length;
+    const completedOutcomes = sessions.filter((session) => ["enquiry_forwarded", "visitor_routed", "closed_no_action"].includes(session.outcome.type)).length;
 
     const domains = ["education", "healthcare", "frontdesk"].map((domain) => {
       const domainSessions = sessions.filter((session) => session.domain === domain);
@@ -72,6 +180,26 @@ export function registerSystemRoutes(app: FastifyInstance) {
       status,
       totalSessions: sessions.filter((session) => session.followUp.status === status).length
     }));
+
+    const outcomeTypes = ["none", "callback_scheduled", "appointment_confirmed", "enquiry_forwarded", "visitor_routed", "closed_no_action"].map((type) => ({
+      type,
+      totalSessions: sessions.filter((session) => session.outcome.type === type).length
+    }));
+
+    const operationTypes = ["appointment", "enquiry", "visitor_routing", "reminder_ack", "follow_up", "generic"].map((type) => ({
+      type,
+      total: operations.filter((operation) => operation.type === type).length
+    }));
+
+    const operationStatuses = ["created", "scheduled", "in_progress", "completed", "cancelled"].map((status) => ({
+      status,
+      total: operations.filter((operation) => operation.status === status).length
+    }));
+
+    const channelMix = {
+      inbound: sessions.filter((session) => session.direction === "inbound").length,
+      outbound: sessions.filter((session) => session.direction === "outbound").length
+    };
 
     const profileMap = new Map(profiles.map((profile) => [profile.id, profile]));
     const profileAnalytics = [...profileMap.values()].map((profile) => {
@@ -105,12 +233,121 @@ export function registerSystemRoutes(app: FastifyInstance) {
         totalCollectedFields,
         openFollowUps,
         resolvedFollowUps,
+        scheduledOutcomes,
+        completedOutcomes,
         completionRate: totalSessions === 0 ? 0 : Number((completedSessions / totalSessions).toFixed(2)),
-        escalationRate: totalSessions === 0 ? 0 : Number((escalatedSessions / totalSessions).toFixed(2))
+        escalationRate: totalSessions === 0 ? 0 : Number((escalatedSessions / totalSessions).toFixed(2)),
+        totalOperations: operations.length,
+        inboundSessions: channelMix.inbound,
+        outboundSessions: channelMix.outbound
       },
       domains,
       followUpStatuses,
+      outcomeTypes,
+      operationTypes,
+      operationStatuses,
+      channelMix,
       profiles: profileAnalytics
+    };
+  });
+
+  app.get("/v1/platform/reports/daily", async (request) => {
+    const { tenantId, date } = request.query as { tenantId?: string; date?: string };
+    const tenant = app.services.agentProfiles.getTenant(tenantId);
+    const reportDate = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : todayIsoDate();
+    const allSessions = await app.services.persistence.listSessions(tenant.id);
+    const sessions = allSessions.filter((session) => session.createdAt.slice(0, 10) === reportDate);
+    const allOperations = await app.services.persistence.listOperations(tenant.id);
+    const operations = allOperations.filter((operation) => operation.createdAt.slice(0, 10) === reportDate);
+    const channelMix = {
+      inbound: sessions.filter((session) => session.direction === "inbound").length,
+      outbound: sessions.filter((session) => session.direction === "outbound").length
+    };
+    const profiles = app.services.agentProfiles.list(tenant.id);
+    const profileMap = new Map(profiles.map((profile) => [profile.id, profile]));
+
+    const totals = {
+      totalSessions: sessions.length,
+      completedSessions: sessions.filter((session) => session.status === "completed").length,
+      escalatedSessions: sessions.filter((session) => session.status === "escalated").length,
+      openFollowUps: sessions.filter((session) => ["new", "in_progress", "contacted"].includes(session.followUp.status)).length,
+      scheduledOutcomes: sessions.filter((session) => ["callback_scheduled", "appointment_confirmed"].includes(session.outcome.type)).length,
+      completedOutcomes: sessions.filter((session) => ["enquiry_forwarded", "visitor_routed", "closed_no_action"].includes(session.outcome.type)).length,
+      totalCollectedFields: sessions.reduce((sum, session) => sum + Object.keys(session.slotState.collected).length, 0)
+    };
+
+    const followUpGroups = followUpStatusList.map((status) => ({
+      status,
+      totalSessions: sessions.filter((session) => session.followUp.status === status).length
+    }));
+
+    const outcomeGroups = outcomeTypeList.map((type) => ({
+      type,
+      totalSessions: sessions.filter((session) => session.outcome.type === type).length
+    }));
+
+    const records = sessions.map((session) => {
+      const profile = session.agentProfileId ? profileMap.get(session.agentProfileId) : null;
+      return {
+        sessionId: session.id,
+        profileName: profile?.name ?? session.agentProfileId ?? session.workflow,
+        domain: session.domain,
+        workflow: session.workflow,
+        status: session.status,
+        caller: session.participant.displayName ?? "Demo caller",
+        phoneNumber: session.participant.phoneNumber,
+        followUpStatus: session.followUp.status,
+        assignee: session.followUp.assignee ?? null,
+        followUpNotes: session.followUp.notes ?? null,
+        outcomeType: session.outcome.type,
+        scheduledFor: session.outcome.scheduledFor ?? null,
+        referenceId: session.outcome.referenceId ?? null,
+        outcomeNotes: session.outcome.notes ?? null,
+        collected: session.slotState.collected,
+        missing: session.slotState.missing,
+        createdAt: session.createdAt
+      };
+    });
+
+    const markdown = buildMarkdownReport({
+      tenantName: tenant.name,
+      date: reportDate,
+      totals,
+      followUpGroups,
+      outcomeGroups,
+      channelMix,
+      operations: operations.map((operation) => ({
+        type: operation.type,
+        status: operation.status,
+        referenceId: operation.referenceId,
+        ...(operation.scheduledFor ? { scheduledFor: operation.scheduledFor } : {})
+      })),
+      records: records.map((record) => ({
+        sessionId: record.sessionId,
+        profileName: record.profileName,
+        domain: record.domain,
+        workflow: record.workflow,
+        caller: record.caller,
+        phoneNumber: record.phoneNumber,
+        followUpStatus: record.followUpStatus,
+        outcomeType: record.outcomeType,
+        ...(record.scheduledFor ? { scheduledFor: record.scheduledFor } : {}),
+        ...(record.referenceId ? { referenceId: record.referenceId } : {}),
+        collected: record.collected
+      }))
+    });
+
+    return {
+      tenant,
+      date: reportDate,
+      generatedAt: new Date().toISOString(),
+      totals,
+      followUpGroups,
+      outcomeGroups,
+      channelMix,
+      operations,
+      records,
+      markdown
     };
   });
 }

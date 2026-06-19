@@ -1,38 +1,109 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
-@theme {
-  --color-sand-50: #fbf6ee;
-  --color-sand-100: #f3ebde;
-  --color-sand-200: #e5d7c0;
-  --color-ink-900: #2d241d;
-  --color-ink-700: #5f5145;
-  --color-teal-700: #0f766e;
-  --color-teal-800: #115e59;
-  --color-amber-600: #d97706;
-  --color-amber-200: #fde6b8;
-}
+@custom-variant dark (&:is(.dark *));
 
+/* shadcn/ui design tokens — warm "sand" surface with a teal primary and amber accent. */
 :root {
-  color: var(--color-ink-900);
-  background:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(217, 119, 6, 0.12), transparent 24%),
-    linear-gradient(135deg, #efe6d7 0%, #f9f4ec 48%, #efe7d9 100%);
+  --radius: 0.85rem;
+
+  --background: #f6f0e6;
+  --foreground: #2d241d;
+
+  --card: rgba(255, 255, 255, 0.92);
+  --card-foreground: #2d241d;
+
+  --popover: #ffffff;
+  --popover-foreground: #2d241d;
+
+  --primary: #0f766e;
+  --primary-foreground: #f7fdfb;
+
+  --secondary: #f3ebde;
+  --secondary-foreground: #44331a;
+
+  --muted: #efe7d9;
+  --muted-foreground: #6c5d4e;
+
+  --accent: #fde6b8;
+  --accent-foreground: #7a3d09;
+
+  --destructive: #e11d48;
+  --destructive-foreground: #fff1f2;
+
+  --border: rgba(45, 36, 29, 0.12);
+  --input: rgba(45, 36, 29, 0.16);
+  --ring: #0f766e;
+
+  --sidebar: rgba(255, 255, 255, 0.86);
+  --sidebar-foreground: #2d241d;
+  --sidebar-primary: #0f766e;
+  --sidebar-primary-foreground: #f7fdfb;
+  --sidebar-accent: #e7f3f1;
+  --sidebar-accent-foreground: #115e59;
+  --sidebar-border: rgba(45, 36, 29, 0.1);
+  --sidebar-ring: #0f766e;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    color-scheme: light;
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--foreground);
+    background:
+      radial-gradient(circle at top left, rgba(15, 118, 110, 0.14), transparent 30%),
+      radial-gradient(circle at bottom right, rgba(217, 119, 6, 0.14), transparent 26%),
+      linear-gradient(135deg, #efe6d7 0%, #f9f4ec 48%, #efe7d9 100%);
+    background-attachment: fixed;
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  #root {
+    min-height: 100vh;
+  }
+}
+
+.font-display {
   font-family: Georgia, "Times New Roman", serif;
-}
-
-body {
-  margin: 0;
-  min-height: 100vh;
-  color: var(--color-ink-900);
-}
-
-#root {
-  min-height: 100vh;
-}
-
-button,
-input,
-textarea {
-  font: inherit;
 }

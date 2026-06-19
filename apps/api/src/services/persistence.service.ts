@@ -1,21 +1,35 @@
+import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import type { CallEvent, CallMetric, CallSession, FollowUpStatus, SessionFollowUp } from "../../../../packages/contracts/src/index.ts";
+import type { CallDirection, CallEvent, CallMetric, CallSession, Contact, FollowUpStatus, Operation, OperationStatus, OperationType, SessionFollowUp, SessionOutcome, SessionOutcomeType } from "../../../../packages/contracts/src/index.ts";
 import type { PersistenceMetricsSummary, TurnApplicationResult } from "../domain/persistence.ts";
+
+const operationReferencePrefix: Record<OperationType, string> = {
+  appointment: "APT",
+  enquiry: "ENQ",
+  visitor_routing: "VIS",
+  reminder_ack: "REM",
+  follow_up: "FUP",
+  generic: "OPS"
+};
 
 class PersistenceService {
   private readonly sessions = new Map<string, CallSession>();
   private readonly metrics: CallMetric[] = [];
   private readonly events: CallEvent[] = [];
+  private readonly contacts = new Map<string, Contact>();
+  private readonly operations = new Map<string, Operation>();
   private pool: Pool | null = null;
   private dbUnavailable = false;
 
-  async createSession(input: Omit<CallSession, "status" | "consentCaptured" | "turnCount" | "createdAt" | "updatedAt" | "followUp">) {
+  async createSession(input: Omit<CallSession, "status" | "consentCaptured" | "turnCount" | "createdAt" | "updatedAt" | "followUp" | "outcome">) {
     const now = new Date().toISOString();
     const session: CallSession = {
       ...input,
+      direction: input.direction ?? "inbound",
       status: "consent_pending",
       consentCaptured: false,
       followUp: { status: "new", updatedAt: now },
+      outcome: { type: "none", updatedAt: now },
       turnCount: 0,
       createdAt: now,
       updatedAt: now
@@ -29,8 +43,10 @@ class PersistenceService {
         tenantId: session.tenantId,
         workflow: session.workflow,
         domain: session.domain,
+        direction: session.direction,
         agentProfileId: session.agentProfileId ?? null,
-        followUpStatus: session.followUp.status
+        followUpStatus: session.followUp.status,
+        outcomeType: session.outcome.type
       },
       createdAt: now
     });
@@ -139,6 +155,34 @@ class PersistenceService {
     return updated;
   }
 
+  async updateOutcome(id: string, input: { type: SessionOutcomeType; scheduledFor?: string; referenceId?: string; notes?: string }) {
+    const session = await this.getSession(id);
+    if (!session) return undefined;
+    const outcome: SessionOutcome = {
+      type: input.type,
+      ...(input.scheduledFor ? { scheduledFor: input.scheduledFor } : {}),
+      ...(input.referenceId ? { referenceId: input.referenceId } : {}),
+      ...(input.notes ? { notes: input.notes } : {}),
+      updatedAt: new Date().toISOString()
+    };
+    const updated: CallSession = { ...session, outcome, updatedAt: outcome.updatedAt };
+    this.sessions.set(id, updated);
+    await this.persistSession(updated);
+    await this.recordEvent({
+      sessionId: id,
+      type: "outcome_updated",
+      payload: {
+        tenantId: updated.tenantId,
+        outcomeType: outcome.type,
+        scheduledFor: outcome.scheduledFor ?? null,
+        referenceId: outcome.referenceId ?? null,
+        notes: outcome.notes ?? null
+      },
+      createdAt: outcome.updatedAt
+    });
+    return updated;
+  }
+
   async recordMetric(metric: CallMetric) {
     this.metrics.push(metric);
     const pool = await this.getPool();
@@ -205,11 +249,158 @@ class PersistenceService {
     return this.events.filter((event) => event.sessionId === sessionId);
   }
 
+  async createContact(tenantId: string, input: { name: string; phoneNumber: string; notes?: string | undefined }) {
+    const now = new Date().toISOString();
+    const contact: Contact = {
+      id: randomUUID(),
+      tenantId,
+      name: input.name,
+      phoneNumber: input.phoneNumber,
+      ...(input.notes ? { notes: input.notes } : {}),
+      createdAt: now
+    };
+    this.contacts.set(contact.id, contact);
+    const pool = await this.getPool();
+    if (pool) {
+      await pool.query(
+        "insert into contacts (id, tenant_id, name, phone_number, notes, created_at) values ($1, $2, $3, $4, $5, $6) on conflict (id) do nothing",
+        [contact.id, contact.tenantId, contact.name, contact.phoneNumber, contact.notes ?? null, contact.createdAt]
+      );
+    }
+    return contact;
+  }
+
+  async getContact(id: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from contacts where id = $1", [id]);
+      const row = result.rows[0];
+      if (row) return this.mapContactRow(row as Record<string, unknown>);
+    }
+    return this.contacts.get(id);
+  }
+
+  async listContacts(tenantId: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from contacts where tenant_id = $1 order by created_at desc", [tenantId]);
+      return result.rows.map((row) => this.mapContactRow(row as Record<string, unknown>));
+    }
+    return [...this.contacts.values()].filter((contact) => contact.tenantId === tenantId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async createOperation(input: { tenantId: string; sessionId: string; agentProfileId?: string; type: OperationType; payload: Record<string, string>; scheduledFor?: string; status?: OperationStatus }) {
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const operation: Operation = {
+      id,
+      tenantId: input.tenantId,
+      sessionId: input.sessionId,
+      ...(input.agentProfileId ? { agentProfileId: input.agentProfileId } : {}),
+      type: input.type,
+      status: input.status ?? "created",
+      payload: input.payload,
+      referenceId: `${operationReferencePrefix[input.type]}-${id.slice(0, 8).toUpperCase()}`,
+      ...(input.scheduledFor ? { scheduledFor: input.scheduledFor } : {}),
+      createdAt: now,
+      updatedAt: now
+    };
+    this.operations.set(operation.id, operation);
+    const pool = await this.getPool();
+    if (pool) {
+      await pool.query(
+        `insert into operations (id, session_id, tenant_id, agent_profile_id, type, status, payload, reference_id, scheduled_for, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11) on conflict (id) do nothing`,
+        [operation.id, operation.sessionId, operation.tenantId, operation.agentProfileId ?? null, operation.type, operation.status, JSON.stringify(operation.payload), operation.referenceId, operation.scheduledFor ?? null, operation.createdAt, operation.updatedAt]
+      );
+    }
+    await this.recordEvent({
+      sessionId: operation.sessionId,
+      type: "operation_created",
+      payload: { tenantId: operation.tenantId, operationId: operation.id, type: operation.type, referenceId: operation.referenceId, status: operation.status },
+      createdAt: now
+    });
+    return operation;
+  }
+
+  async getOperation(id: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from operations where id = $1", [id]);
+      const row = result.rows[0];
+      if (row) return this.mapOperationRow(row as Record<string, unknown>);
+    }
+    return this.operations.get(id);
+  }
+
+  async listOperations(tenantId: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from operations where tenant_id = $1 order by created_at desc", [tenantId]);
+      return result.rows.map((row) => this.mapOperationRow(row as Record<string, unknown>));
+    }
+    return [...this.operations.values()].filter((operation) => operation.tenantId === tenantId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async listOperationsBySession(sessionId: string) {
+    const pool = await this.getPool();
+    if (pool) {
+      const result = await pool.query("select * from operations where session_id = $1 order by created_at desc", [sessionId]);
+      return result.rows.map((row) => this.mapOperationRow(row as Record<string, unknown>));
+    }
+    return [...this.operations.values()].filter((operation) => operation.sessionId === sessionId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async updateOperationStatus(id: string, status: OperationStatus) {
+    const existing = await this.getOperation(id);
+    if (!existing) return undefined;
+    const updated: Operation = { ...existing, status, updatedAt: new Date().toISOString() };
+    this.operations.set(id, updated);
+    const pool = await this.getPool();
+    if (pool) {
+      await pool.query("update operations set status = $2, updated_at = $3 where id = $1", [id, updated.status, updated.updatedAt]);
+    }
+    await this.recordEvent({
+      sessionId: updated.sessionId,
+      type: "operation_updated",
+      payload: { tenantId: updated.tenantId, operationId: updated.id, status: updated.status },
+      createdAt: updated.updatedAt
+    });
+    return updated;
+  }
+
   async close() {
     if (this.pool) {
       await this.pool.end();
       this.pool = null;
     }
+  }
+
+  private mapContactRow(row: Record<string, unknown>): Contact {
+    return {
+      id: row.id as string,
+      tenantId: row.tenant_id as string,
+      name: row.name as string,
+      phoneNumber: row.phone_number as string,
+      ...(row.notes ? { notes: row.notes as string } : {}),
+      createdAt: new Date(row.created_at as string).toISOString()
+    };
+  }
+
+  private mapOperationRow(row: Record<string, unknown>): Operation {
+    return {
+      id: row.id as string,
+      tenantId: row.tenant_id as string,
+      sessionId: row.session_id as string,
+      ...(row.agent_profile_id ? { agentProfileId: row.agent_profile_id as string } : {}),
+      type: row.type as OperationType,
+      status: row.status as OperationStatus,
+      payload: (row.payload as Record<string, string> | undefined) ?? {},
+      referenceId: row.reference_id as string,
+      ...(row.scheduled_for ? { scheduledFor: row.scheduled_for as string } : {}),
+      createdAt: new Date(row.created_at as string).toISOString(),
+      updatedAt: new Date(row.updated_at as string).toISOString()
+    };
   }
 
   private async recordEvent(event: CallEvent) {
@@ -223,15 +414,18 @@ class PersistenceService {
     const pool = await this.getPool();
     if (!pool) return;
     await pool.query(
-      `insert into call_sessions (id, tenant_id, domain, workflow, agent_profile_id, status, language, phone_number, display_name, consent_captured, slot_state, follow_up, turn_count, last_transcript, escalation_summary, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15::jsonb, $16, $17)
+      `insert into call_sessions (id, tenant_id, domain, workflow, agent_profile_id, status, language, direction, contact_id, phone_number, display_name, consent_captured, slot_state, follow_up, outcome, turn_count, last_transcript, escalation_summary, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16, $17, $18::jsonb, $19, $20)
        on conflict (id) do update
            set tenant_id = excluded.tenant_id,
                agent_profile_id = excluded.agent_profile_id,
                status = excluded.status,
+               direction = excluded.direction,
+               contact_id = excluded.contact_id,
                consent_captured = excluded.consent_captured,
                slot_state = excluded.slot_state,
                follow_up = excluded.follow_up,
+               outcome = excluded.outcome,
                turn_count = excluded.turn_count,
                last_transcript = excluded.last_transcript,
                escalation_summary = excluded.escalation_summary,
@@ -244,11 +438,14 @@ class PersistenceService {
         session.agentProfileId ?? null,
         session.status,
         session.language,
+        session.direction,
+        session.contactId ?? null,
         session.participant.phoneNumber,
         session.participant.displayName ?? null,
         session.consentCaptured,
         JSON.stringify(session.slotState),
         JSON.stringify(session.followUp),
+        JSON.stringify(session.outcome),
         session.turnCount,
         session.lastTranscript ?? null,
         JSON.stringify(session.escalationSummary ?? null),
@@ -261,6 +458,7 @@ class PersistenceService {
   private mapSessionRow(row: Record<string, unknown>): CallSession {
     const participant = row.display_name ? { phoneNumber: row.phone_number as string, displayName: row.display_name as string } : { phoneNumber: row.phone_number as string };
     const followUp = (row.follow_up as SessionFollowUp | undefined) ?? { status: "new", updatedAt: new Date(row.updated_at as string).toISOString() };
+    const outcome = (row.outcome as SessionOutcome | undefined) ?? { type: "none", updatedAt: new Date(row.updated_at as string).toISOString() };
     const sessionBase: CallSession = {
       id: row.id as string,
       tenantId: row.tenant_id as string,
@@ -269,10 +467,13 @@ class PersistenceService {
       ...(row.agent_profile_id ? { agentProfileId: row.agent_profile_id as string } : {}),
       status: row.status as CallSession["status"],
       language: row.language as CallSession["language"],
+      direction: (row.direction as CallDirection | undefined) ?? "inbound",
+      ...(row.contact_id ? { contactId: row.contact_id as string } : {}),
       participant,
       consentCaptured: Boolean(row.consent_captured),
       slotState: row.slot_state as CallSession["slotState"],
       followUp,
+      outcome,
       turnCount: Number(row.turn_count ?? 0),
       createdAt: new Date(row.created_at as string).toISOString(),
       updatedAt: new Date(row.updated_at as string).toISOString()

@@ -15,6 +15,8 @@ export const createSessionSchema = z.object({
     "institution_reception"
   ]).optional(),
   language: z.enum(["en-IN", "hi-IN", "kn-IN", "ta-IN", "ml-IN"]).default("en-IN"),
+  direction: z.enum(["inbound", "outbound"]).default("inbound"),
+  contactId: z.string().optional(),
   phoneNumber: z.string().min(3),
   displayName: z.string().min(1).optional()
 }).refine((value) => Boolean(value.profileId || (value.domain && value.workflow)), {
@@ -22,6 +24,31 @@ export const createSessionSchema = z.object({
 });
 
 export const consentSchema = z.object({ consentGranted: z.boolean() });
+
+export const registerTenantSchema = z.object({
+  name: z.string().min(2),
+  description: z.string().trim().default(""),
+  domainFocus: z.enum(["education", "healthcare", "frontdesk"]),
+  adminContactName: z.string().trim().optional(),
+  adminContactEmail: z.string().trim().optional(),
+  useCaseTemplateId: z.string().trim().optional()
+});
+
+export const deploymentSchema = z.object({
+  actorId: z.string().min(1),
+  tenantId: z.string().min(1).optional(),
+  deployed: z.boolean()
+});
+
+export const createContactSchema = z.object({
+  name: z.string().min(1),
+  phoneNumber: z.string().min(3),
+  notes: z.string().trim().optional()
+});
+
+export const updateOperationStatusSchema = z.object({
+  status: z.enum(["created", "scheduled", "in_progress", "completed", "cancelled"])
+});
 
 export const processTurnSchema = z.object({
   transcript: z.string().min(1),

@@ -1,11 +1,14 @@
 import { createAsyncThunk, createSlice, nanoid, type PayloadAction } from "@reduxjs/toolkit";
 import { createApiClient } from "./demoApi";
 import type {
+  CallDirection,
   CallPhase,
   DemoConfig,
   DemoMetrics,
+  DemoSeedResult,
   DemoSession,
   SessionEvent,
+  TargetContact,
   VoiceState
 } from "./types";
 import type { RootState } from "../../app/store";
@@ -15,10 +18,13 @@ interface DemoState {
   config: DemoConfig | null;
   selectedScenarioId: string | null;
   selectedLanguage: "en-IN" | "hi-IN" | "kn-IN" | "ta-IN" | "ml-IN";
+  direction: CallDirection;
+  targetContact: TargetContact;
   session: DemoSession | null;
   transcript: Array<{ id: string; role: "system" | "agent" | "user"; title: string; text: string; pending?: boolean }>;
   events: SessionEvent[];
   metrics: DemoMetrics | null;
+  seedResult: DemoSeedResult | null;
   lastAgentReply: string;
   pendingAgentReply: string;
   callPhase: CallPhase;
@@ -28,14 +34,17 @@ interface DemoState {
 }
 
 const initialState: DemoState = {
-  apiBaseUrl: "http://127.0.0.1:8080",
+  apiBaseUrl: "http://127.0.0.1:5005",
   config: null,
   selectedScenarioId: null,
   selectedLanguage: "en-IN",
+  direction: "inbound",
+  targetContact: { name: "", phoneNumber: "" },
   session: null,
   transcript: [],
   events: [],
   metrics: null,
+  seedResult: null,
   lastAgentReply: "",
   pendingAgentReply: "",
   callPhase: "idle",
@@ -62,6 +71,14 @@ export const fetchMetrics = createAsyncThunk("demo/fetchMetrics", async (_, { ge
   return response.data;
 });
 
+export const seedDemoRecords = createAsyncThunk("demo/seedRecords", async (_, { getState, dispatch }) => {
+  const state = getState() as RootState;
+  const api = createApiClient(selectApiBaseUrl(state));
+  const response = await api.post<DemoSeedResult>("/v1/demo/seed", { tenantId: selectTenantId(state) });
+  await dispatch(fetchMetrics());
+  return response.data;
+});
+
 export const fetchSessionEvents = createAsyncThunk("demo/fetchSessionEvents", async (_, { getState }) => {
   const state = getState() as RootState;
   if (!state.demo.session) return [] as SessionEvent[];
@@ -75,12 +92,16 @@ export const startDemoSession = createAsyncThunk("demo/startSession", async (_, 
   const scenario = selectSelectedScenario(state);
   if (!scenario) throw new Error("Select a scenario first.");
   const api = createApiClient(selectApiBaseUrl(state));
+  const direction = state.demo.direction;
+  const target = state.demo.targetContact;
+  const isOutbound = direction === "outbound";
   const response = await api.post("/v1/calls/session", {
     tenantId: selectTenantId(state),
     profileId: scenario.id,
     language: state.demo.selectedLanguage,
-    phoneNumber: "+910000000000",
-    displayName: "Demo Caller"
+    direction,
+    phoneNumber: isOutbound && target.phoneNumber.trim() ? target.phoneNumber.trim() : "+910000000000",
+    displayName: isOutbound && target.name.trim() ? target.name.trim() : "Demo Caller"
   });
   await dispatch(fetchMetrics());
   return { session: response.data.session as DemoSession, scenario };
@@ -129,6 +150,8 @@ const demoSlice = createSlice({
       state.error = null;
     },
     setSelectedLanguage(state, action: PayloadAction<DemoState["selectedLanguage"]>) { state.selectedLanguage = action.payload; },
+    setCallDirection(state, action: PayloadAction<CallDirection>) { state.direction = action.payload; },
+    setTargetContact(state, action: PayloadAction<TargetContact>) { state.targetContact = action.payload; },
     clearError(state) { state.error = null; },
     resetDemoWorkspace(state) {
       state.session = null;
@@ -139,6 +162,8 @@ const demoSlice = createSlice({
       state.transcript = [];
       state.events = [];
       state.metrics = null;
+      state.seedResult = null;
+      state.targetContact = { name: "", phoneNumber: "" };
       state.error = null;
     },
     setCallPhase(state, action: PayloadAction<CallPhase>) { state.callPhase = action.payload; },
@@ -167,6 +192,16 @@ const demoSlice = createSlice({
       })
       .addCase(fetchDemoConfig.rejected, (state, action) => { state.loading = false; state.error = action.error.message ?? "Unable to load demo config."; })
       .addCase(fetchMetrics.fulfilled, (state, action) => { state.metrics = action.payload; })
+      .addCase(seedDemoRecords.pending, (state) => { state.loading = true; state.error = null; })
+      .addCase(seedDemoRecords.fulfilled, (state, action) => {
+        state.loading = false;
+        state.seedResult = action.payload;
+        state.transcript.push({ id: nanoid(), role: "system", title: "Demo Seed", text: `${action.payload.seededCount} sample record${action.payload.seededCount === 1 ? "" : "s"} added for the current workspace.` });
+      })
+      .addCase(seedDemoRecords.rejected, (state, action) => {
+        state.loading = false;
+        state.error = action.error.message ?? "Unable to seed demo records.";
+      })
       .addCase(fetchSessionEvents.fulfilled, (state, action) => { state.events = action.payload; })
       .addCase(startDemoSession.pending, (state) => { state.loading = true; state.error = null; state.callPhase = "dialing"; })
       .addCase(startDemoSession.fulfilled, (state, action) => {
@@ -210,5 +245,5 @@ const demoSlice = createSlice({
   }
 });
 
-export const { setApiBaseUrl, selectScenario, setSelectedLanguage, clearError, resetDemoWorkspace, setCallPhase, setVoiceState, commitAgentReply, replacePendingAgentMessage } = demoSlice.actions;
+export const { setApiBaseUrl, selectScenario, setSelectedLanguage, setCallDirection, setTargetContact, clearError, resetDemoWorkspace, setCallPhase, setVoiceState, commitAgentReply, replacePendingAgentMessage } = demoSlice.actions;
 export default demoSlice.reducer;
