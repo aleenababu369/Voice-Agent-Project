@@ -107,18 +107,19 @@ export function AgentConfigPage() {
               <Separator />
 
               <div>
-                <div className="mb-3 flex items-center justify-between">
+                <div className="mb-1 flex items-center justify-between">
                   <div><Eyebrow>Data to collect</Eyebrow><h4 className="text-lg font-semibold">Questions & fields</h4></div>
                   <Button size="sm" variant="outline" onClick={() => setDraft({ ...draft, slots: [...draft.slots, { key: `field_${draft.slots.length + 1}`, label: "New field", prompt: "Please provide this detail.", required: true, examples: [] }] })}><Plus className="h-4 w-4" /> Add field</Button>
                 </div>
+                <p className="mb-3 text-sm text-muted-foreground">Define what the agent asks for. On a real call the caller speaks the answer and the agent extracts &amp; stores the value automatically — you do not enter the value here.</p>
                 <div className="grid gap-3">
                   {draft.slots.map((slot, index) => (
                     <div key={index} className="rounded-xl border border-border bg-secondary/40 p-4">
                       <div className="grid gap-3 md:grid-cols-2">
-                        <Input value={slot.key} onChange={(e) => updateSlot(index, { key: e.target.value })} placeholder="field_key" />
-                        <Input value={slot.label} onChange={(e) => updateSlot(index, { label: e.target.value })} placeholder="Label" />
-                        <Textarea rows={2} className="md:col-span-2" value={slot.prompt} onChange={(e) => updateSlot(index, { prompt: e.target.value })} placeholder="Prompt the agent asks" />
-                        <Input className="md:col-span-2" value={slot.examples?.join(", ") ?? ""} onChange={(e) => updateSlot(index, { examples: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="Examples, comma separated" />
+                        <Field label="Field key (stored in DB)"><Input value={slot.key} onChange={(e) => updateSlot(index, { key: e.target.value })} placeholder="patient_name" /></Field>
+                        <Field label="Label"><Input value={slot.label} onChange={(e) => updateSlot(index, { label: e.target.value })} placeholder="Patient name" /></Field>
+                        <div className="md:col-span-2"><Field label="Question the agent asks the caller"><Textarea rows={2} value={slot.prompt} onChange={(e) => updateSlot(index, { prompt: e.target.value })} placeholder="e.g. May I have the patient's name?" /></Field></div>
+                        <div className="md:col-span-2"><Field label="Example answers (optional)" hint="Sample ways a caller might phrase their answer — used only as hints for the AI, never stored as the value."><Input value={slot.examples?.join(", ") ?? ""} onChange={(e) => updateSlot(index, { examples: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="e.g. I am Asha, my name is Asha" /></Field></div>
                       </div>
                       <div className="mt-3 flex items-center justify-between">
                         <label className="flex items-center gap-2 text-sm text-muted-foreground"><input type="checkbox" checked={slot.required} onChange={(e) => updateSlot(index, { required: e.target.checked })} /> Required</label>

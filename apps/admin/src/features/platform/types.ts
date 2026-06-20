@@ -111,6 +111,8 @@ export interface OperationDto {
   tenantId: string;
   sessionId: string;
   agentProfileId?: string;
+  prospectId?: string;
+  campaignId?: string;
   type: OperationTypeDto;
   status: OperationStatusDto;
   payload: Record<string, string>;
@@ -213,6 +215,8 @@ export interface SessionRecordDto {
   language: string;
   direction: CallDirectionDto;
   contactId?: string;
+  prospectId?: string;
+  campaignId?: string;
   participant: { phoneNumber: string; displayName?: string };
   slotState: { collected: Record<string, string>; missing: string[]; required: string[] };
   followUp: SessionFollowUpDto;

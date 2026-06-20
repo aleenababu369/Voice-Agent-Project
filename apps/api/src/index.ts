@@ -1,4 +1,4 @@
-import { buildApp } from "./app.ts";
+import { buildApp, initServices } from "./app.ts";
 
 const port = Number(process.env.PORT ?? 5005);
 const host = process.env.HOST ?? "0.0.0.0";
@@ -6,6 +6,7 @@ const host = process.env.HOST ?? "0.0.0.0";
 const app = buildApp();
 
 try {
+  await initServices();
   await app.listen({ port, host });
   console.log(`Voice agent API listening on http://${host}:${port}`);
 } catch (error) {

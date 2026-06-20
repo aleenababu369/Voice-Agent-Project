@@ -50,8 +50,9 @@ class CallOrchestrator {
     const requiredSlots = input.profile.slots.filter((slot) => slot.required).map((slot) => slot.key);
     const priorMissing = requiredSlots.filter((slot) => !input.session.slotState.collected[slot]);
 
-    // Real LLM turn (when configured) drives the reply + extraction; union with the rule extractor for recall.
-    let extractedSlots = slotExtractor.extractProfile(input.profile, transcript);
+    // Real LLM turn (when configured) drives the reply + extraction; the rule extractor backfills for recall.
+    const ruleSlots = slotExtractor.extractProfile(input.profile, transcript);
+    let llmSlots: Record<string, string> = {};
     let llmReply: string | null = null;
     let llmEscalate = false;
     const adapter = getLlmTurnAdapter();
@@ -66,10 +67,20 @@ class CallOrchestrator {
         transcript
       });
       if (turn) {
-        extractedSlots = { ...extractedSlots, ...turn.extractedFields };
+        llmSlots = turn.extractedFields;
         llmReply = turn.reply;
         llmEscalate = turn.action === "escalate";
       }
+    }
+
+    // Only fill slots that are not already collected, so good values are never clobbered by a later turn.
+    // The LLM is preferred per slot; the rule extractor backfills anything the model missed.
+    const extractedSlots: Record<string, string> = {};
+    for (const slot of input.profile.slots) {
+      if (input.session.slotState.collected[slot.key] !== undefined) continue;
+      const llmValue = llmSlots[slot.key];
+      if (llmValue !== undefined && String(llmValue).trim()) extractedSlots[slot.key] = String(llmValue).trim();
+      else if (ruleSlots[slot.key] !== undefined) extractedSlots[slot.key] = ruleSlots[slot.key]!;
     }
 
     const collected = { ...input.session.slotState.collected, ...extractedSlots };

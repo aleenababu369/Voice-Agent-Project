@@ -9,15 +9,14 @@
     "packages/*"
   ],
   "scripts": {
-    "dev:api": "node --experimental-strip-types apps/api/src/index.ts",
+    "dev:api": "node --env-file-if-exists=.env --experimental-strip-types apps/api/src/index.ts",
     "dev:admin": "npm --prefix apps/admin run dev",
     "build:admin": "npm --prefix apps/admin run build",
     "check": "node scripts/check-workspace.mjs",
-    "smoke:api": "node --experimental-strip-types scripts/smoke-api.ts"
+    "smoke:api": "node --env-file-if-exists=.env --experimental-strip-types scripts/smoke-api.ts"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
-    "@types/pg": "^8.18.0",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }

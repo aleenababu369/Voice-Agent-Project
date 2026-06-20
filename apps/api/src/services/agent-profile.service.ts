@@ -1,5 +1,9 @@
 import type { AgentProfile, Domain, SlotDefinition, Tenant, WorkflowType } from "../../../../packages/contracts/src/index.ts";
 import { authService } from "./auth.service.ts";
+import { getCollection, stripId } from "../db/mongo.ts";
+
+const PROFILES_COLLECTION = "agent_profiles";
+const VERSIONS_COLLECTION = "agent_profile_versions";
 
 const now = () => new Date().toISOString();
 
@@ -326,6 +330,60 @@ class AgentProfileService {
     const versions = this.versions.get(profile.id) ?? [];
     const snapshot = this.createVersionSnapshot(profile, actor, changeSummary, versions.length + 1);
     this.versions.set(profile.id, [snapshot, ...versions]);
+    this.persistProfile(profile);
+    this.persistVersion(snapshot);
+  }
+
+  /** Load persisted agents + versions from Mongo (when configured) and ensure the demo seeds exist. Called once at startup. */
+  async hydrate() {
+    const profilesCollection = await getCollection(PROFILES_COLLECTION);
+    if (profilesCollection) {
+      for (const doc of await profilesCollection.find({}).toArray()) {
+        const profile = stripId<AgentProfile>(doc as Record<string, unknown>);
+        if (profile) this.profiles.set(profile.id, profile);
+      }
+    }
+    const versionsCollection = await getCollection(VERSIONS_COLLECTION);
+    if (versionsCollection) {
+      const grouped = new Map<string, AgentProfileVersion[]>();
+      for (const doc of await versionsCollection.find({}).toArray()) {
+        const version = stripId<AgentProfileVersion>(doc as Record<string, unknown>);
+        if (version) {
+          const list = grouped.get(version.profileId) ?? [];
+          list.push(version);
+          grouped.set(version.profileId, list);
+        }
+      }
+      for (const [profileId, list] of grouped) this.versions.set(profileId, list.sort((a, b) => b.version - a.version));
+    }
+    if (profilesCollection) {
+      for (const profile of this.profiles.values()) {
+        this.persistProfile(profile);
+        for (const version of this.versions.get(profile.id) ?? []) this.persistVersion(version);
+      }
+    }
+  }
+
+  private persistProfile(profile: AgentProfile) {
+    void (async () => {
+      try {
+        const collection = await getCollection(PROFILES_COLLECTION);
+        if (collection) await collection.replaceOne({ _id: profile.id }, { ...profile }, { upsert: true });
+      } catch {
+        // best-effort durable mirror; the in-memory Map remains authoritative in-process
+      }
+    })();
+  }
+
+  private persistVersion(version: AgentProfileVersion) {
+    void (async () => {
+      try {
+        const collection = await getCollection(VERSIONS_COLLECTION);
+        if (collection) await collection.replaceOne({ _id: version.id }, { ...version }, { upsert: true });
+      } catch {
+        // best-effort
+      }
+    })();
   }
 
   private createVersionSnapshot(profile: AgentProfile, actor: { id: string; name: string; role: AdminRole }, changeSummary: string, version = 1): AgentProfileVersion {
@@ -354,9 +412,10 @@ class AgentProfileService {
     if (template) {
       const missingTemplateSlots = template.slots.filter((slot) => slot.required).map((slot) => slot.key).filter((key) => !requiredSlots.includes(key));
       if (missingTemplateSlots.length > 0) issues.push(`This ${input.domain} template expects these required fields: ${missingTemplateSlots.join(", ")}.`);
-      const requiredPlaceholders = template.slots.filter((slot) => slot.required).map((slot) => slot.key).slice(0, 2);
-      const missingPlaceholders = requiredPlaceholders.filter((key) => !input.completionMessageTemplate.includes(`{{${key}}}`));
-      if (missingPlaceholders.length > 0) issues.push(`Completion message should include these placeholders: ${missingPlaceholders.map((key) => `{{${key}}}`).join(", ")}.`);
+      const hasFieldPlaceholder = requiredSlots.some((key) => input.completionMessageTemplate.includes(`{{${key}}}`));
+      if (requiredSlots.length > 0 && !hasFieldPlaceholder) {
+        issues.push(`Completion message should reference at least one collected field, e.g. ${requiredSlots.slice(0, 2).map((key) => `{{${key}}}`).join(", ")}.`);
+      }
     }
 
     if (issues.length > 0) throw new AgentProfileValidationError(issues);

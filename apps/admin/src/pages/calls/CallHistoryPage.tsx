@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Download } from "lucide-react";
+import { Download, Megaphone } from "lucide-react";
 import { useAppSelector } from "../../app/hooks";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { EmptyState, MetricCard, SectionHeader, SimpleSelect, formatLabel } from
 export function CallHistoryPage() {
   const sessions = useAppSelector((state) => state.platform.sessions);
   const analytics = useAppSelector((state) => state.platform.analytics);
+  const campaigns = useAppSelector((state) => state.platform.campaigns);
   const [search, setSearch] = useState("");
   const [direction, setDirection] = useState("all");
   const [status, setStatus] = useState("all");
@@ -67,6 +68,7 @@ export function CallHistoryPage() {
                     <span className="text-xs text-muted-foreground">{session.workflow} · {new Date(session.createdAt).toLocaleString()}</span>
                   </div>
                   <div className="flex items-center gap-2">
+                    {session.campaignId ? <Badge variant="outline"><Megaphone className="h-3 w-3" /> {campaigns.find((c) => c.id === session.campaignId)?.name ?? "Campaign"}</Badge> : null}
                     <Badge variant="muted">{formatLabel(session.outcome.type)}</Badge>
                     <Badge variant={session.status === "completed" ? "success" : session.status === "escalated" ? "destructive" : "muted"}>{session.status}</Badge>
                   </div>

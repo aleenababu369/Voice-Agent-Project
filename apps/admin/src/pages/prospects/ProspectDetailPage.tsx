@@ -1,8 +1,8 @@
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Megaphone } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "../../app/hooks";
-import { fetchProspectDetail, updateOperation } from "../../features/platform/platformSlice";
+import { fetchCampaigns, fetchProspectDetail, updateOperation } from "../../features/platform/platformSlice";
 import type { OperationStatusDto } from "../../features/platform/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,20 +15,30 @@ export function ProspectDetailPage() {
   const dispatch = useAppDispatch();
   const { prospectId } = useParams();
   const detail = useAppSelector((state) => state.platform.prospectDetail);
+  const campaigns = useAppSelector((state) => state.platform.campaigns);
 
   useEffect(() => {
     if (prospectId) void dispatch(fetchProspectDetail(prospectId));
+    void dispatch(fetchCampaigns());
   }, [dispatch, prospectId]);
 
   if (!detail || detail.prospect.id !== prospectId) {
     return <div className="text-sm text-muted-foreground">Loading prospect…</div>;
   }
   const { prospect, sessions, operations } = detail;
+  const campaign = prospect.campaignId ? campaigns.find((item) => item.id === prospect.campaignId) : null;
 
   return (
     <div className="space-y-6">
       <Button variant="ghost" asChild><Link to="/prospects"><ArrowLeft className="h-4 w-4" /> Prospects</Link></Button>
       <SectionHeader eyebrow="Prospect" title={prospect.name} subtitle={prospect.phoneNumber} aside={<Badge variant={prospect.status === "completed" ? "success" : "muted"}>{formatLabel(prospect.status)}</Badge>} />
+
+      {prospect.campaignId ? (
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-muted-foreground">Campaign:</span>
+          <Button variant="outline" size="sm" asChild><Link to={`/campaigns/${prospect.campaignId}`}><Megaphone className="h-4 w-4" /> {campaign?.name ?? "View campaign"}</Link></Button>
+        </div>
+      ) : null}
 
       <div className="grid gap-3 sm:grid-cols-4">
         <StatTile label="Calls" value={String(sessions.length)} />

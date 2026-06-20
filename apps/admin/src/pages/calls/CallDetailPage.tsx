@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Bot, Megaphone, UserRound } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "../../app/hooks";
 import { fetchCallDetail, updateSessionFollowUp, updateSessionOutcome } from "../../features/platform/platformSlice";
 import type { FollowUpStatusDto, SessionOutcomeTypeDto } from "../../features/platform/types";
@@ -18,6 +18,8 @@ export function CallDetailPage() {
   const dispatch = useAppDispatch();
   const { callId } = useParams();
   const detail = useAppSelector((state) => state.platform.callDetail);
+  const profiles = useAppSelector((state) => state.platform.profiles);
+  const campaigns = useAppSelector((state) => state.platform.campaigns);
   const [followUp, setFollowUp] = useState<FollowUpStatusDto>("new");
   const [outcome, setOutcome] = useState<SessionOutcomeTypeDto>("none");
   const [reference, setReference] = useState("");
@@ -37,6 +39,8 @@ export function CallDetailPage() {
   if (!detail || detail.sessionId !== callId) return <div className="text-sm text-muted-foreground">Loading call…</div>;
 
   const seconds = Math.round(detail.durationMs / 1000);
+  const agentName = profiles.find((profile) => profile.id === detail.agentProfileId)?.name;
+  const campaignName = campaigns.find((campaign) => campaign.id === detail.campaignId)?.name;
 
   return (
     <div className="space-y-6">
@@ -55,6 +59,15 @@ export function CallDetailPage() {
         <MetricCard label="ASR conf." value={String(detail.averageAsrConfidence)} />
         <MetricCard label="NLU conf." value={String(detail.averageNluConfidence)} />
       </div>
+
+      {detail.agentProfileId || detail.prospectId || detail.campaignId ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-muted-foreground">Related:</span>
+          {detail.agentProfileId ? <Button variant="outline" size="sm" asChild><Link to={`/agents/${detail.agentProfileId}`}><Bot className="h-4 w-4" /> {agentName ?? "Agent"}</Link></Button> : null}
+          {detail.prospectId ? <Button variant="outline" size="sm" asChild><Link to={`/prospects/${detail.prospectId}`}><UserRound className="h-4 w-4" /> Prospect</Link></Button> : null}
+          {detail.campaignId ? <Button variant="outline" size="sm" asChild><Link to={`/campaigns/${detail.campaignId}`}><Megaphone className="h-4 w-4" /> {campaignName ?? "Campaign"}</Link></Button> : null}
+        </div>
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <Card>

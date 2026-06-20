@@ -1,6 +1,10 @@
 import type { Account, Domain } from "../../../../packages/contracts/src/index.ts";
 import { hashPassword, verifyPassword } from "../lib/password.ts";
 import { getJwtSecret, signJwt, verifyJwt } from "../lib/jwt.ts";
+import { getCollection, stripId } from "../db/mongo.ts";
+
+const ACCOUNTS_COLLECTION = "accounts";
+const DEMO_ACCOUNT_IDS = ["city-hospital", "greenfield-college", "northstar-frontdesk"];
 
 interface StoredAccount extends Account {
   passwordHash: string;
@@ -46,11 +50,35 @@ class AuthService {
     return "city-hospital";
   }
 
+  /** Load persisted accounts from Mongo (when configured) and ensure the demo accounts exist. Called once at startup. */
+  async hydrate() {
+    const collection = await getCollection(ACCOUNTS_COLLECTION);
+    if (collection) {
+      const docs = await collection.find({}).toArray();
+      for (const doc of docs) {
+        const account = stripId<StoredAccount>(doc as Record<string, unknown>);
+        if (account) {
+          this.accounts.set(account.id, account);
+          this.byEmail.set(account.email.toLowerCase(), account.id);
+        }
+      }
+      for (const id of DEMO_ACCOUNT_IDS) {
+        const demo = this.accounts.get(id);
+        if (demo) await this.persist(demo);
+      }
+    }
+  }
+
+  private async persist(account: StoredAccount) {
+    const collection = await getCollection(ACCOUNTS_COLLECTION);
+    if (collection) await collection.replaceOne({ _id: account.id }, { ...account }, { upsert: true });
+  }
+
   listAccounts(): Account[] {
     return [...this.accounts.values()].map(toPublic);
   }
 
-  signup(input: { name: string; email: string; password: string; useCase?: Domain | null | undefined }) {
+  async signup(input: { name: string; email: string; password: string; useCase?: Domain | null | undefined }) {
     const email = input.email.trim().toLowerCase();
     if (this.byEmail.has(email)) throw new AuthError("An account with this email already exists.", 409);
     const base = input.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "account";
@@ -61,6 +89,7 @@ class AuthService {
     const account: StoredAccount = { id, name: input.name.trim(), email, useCase: input.useCase ?? null, createdAt: now(), passwordHash: hash, passwordSalt: salt };
     this.accounts.set(id, account);
     this.byEmail.set(email, id);
+    await this.persist(account);
     return { account: toPublic(account), token: this.issueToken(account) };
   }
 
@@ -84,11 +113,12 @@ class AuthService {
     return account ? toPublic(account) : undefined;
   }
 
-  setUseCase(id: string, useCase: Domain): Account {
+  async setUseCase(id: string, useCase: Domain): Promise<Account> {
     const account = this.accounts.get(id);
     if (!account) throw new AuthError(`Account not found: ${id}`, 404);
     account.useCase = useCase;
     this.accounts.set(id, account);
+    await this.persist(account);
     return toPublic(account);
   }
 

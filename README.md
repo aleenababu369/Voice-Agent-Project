@@ -19,7 +19,7 @@ A multi-user platform where each account builds, deploys, and runs its own voice
 
 - **Monorepo** — `apps/api` (Fastify + TypeScript), `apps/admin` (React 19 + Vite), `packages/contracts` (shared types).
 - **Auth** — signup/login with scrypt-hashed passwords and HS256 JWTs (built on `node:crypto`, no extra dependencies). All data is scoped to the authenticated account.
-- **Entities** — accounts, agents (profiles with versioning), prospects, campaigns, call sessions, and operations. In-memory by default; an optional PostgreSQL path mirrors it (`infra/sql/*.sql`).
+- **Entities** — accounts, agents (profiles with versioning), prospects, campaigns, call sessions, and operations. Persisted to **MongoDB** when `MONGODB_URI` is set (each entity is its own collection); falls back to in-memory when unset or unreachable, so the app always runs.
 - **Conversation engine** — a turn pipeline with consent capture, a safety/escalation policy, slot extraction, and completion. `services/call-runner.ts` is shared by the REST turn route, the campaign dialer, and the softphone relay.
 - **Real model (optional)** — an OpenAI-compatible LLM adapter drives the agent's replies and field extraction when configured; otherwise the built-in zero-cost rule engine runs. ASR/TTS use the browser's Web Speech APIs.
 - **Two-tab softphone** — a backend WebSocket relay lets a real person answer a call in a second browser tab while the dashboard monitors the conversation live.
@@ -58,7 +58,7 @@ Copy `.env.example` and adjust as needed. Everything runs in-memory with no conf
 | `JWT_SECRET` | Secret used to sign login tokens (set a strong value in production). |
 | `AUTH_ENFORCE` | `true` to require a valid token on all non-public routes. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Point the agent at a real OpenAI-compatible model (e.g. OpenAI, or a free local Ollama / LM Studio at `http://localhost:11434/v1`). Leave unset to use the built-in rule engine. |
-| `DATABASE_URL` | Optional PostgreSQL; falls back to in-memory when unavailable. |
+| `MONGODB_URI`, `MONGODB_DB` | MongoDB connection (e.g. Atlas `mongodb+srv://…`) and database name (default `voice_agent`). Unset → in-memory. |
 
 ## Build & verify
 

@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Trash2, UserRound } from "lucide-react";
+import { Megaphone, Plus, Trash2, UserRound } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "../../app/hooks";
-import { createProspect } from "../../features/platform/platformSlice";
+import { createProspect, fetchCampaigns } from "../../features/platform/platformSlice";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,10 +14,15 @@ interface FieldRow { key: string; value: string; }
 export function ProspectsListPage() {
   const dispatch = useAppDispatch();
   const prospects = useAppSelector((state) => state.platform.prospects);
+  const campaigns = useAppSelector((state) => state.platform.campaigns);
   const [search, setSearch] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [rows, setRows] = useState<FieldRow[]>([]);
+
+  useEffect(() => {
+    void dispatch(fetchCampaigns());
+  }, [dispatch]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -78,7 +83,10 @@ export function ProspectsListPage() {
                       <span className="text-xs text-muted-foreground">{prospect.phoneNumber}</span>
                     </div>
                   </div>
-                  <Badge variant={prospect.status === "completed" ? "success" : prospect.status === "failed" ? "destructive" : "muted"}>{formatLabel(prospect.status)}</Badge>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {prospect.campaignId ? <Badge variant="outline"><Megaphone className="h-3 w-3" /> {campaigns.find((c) => c.id === prospect.campaignId)?.name ?? "Campaign"}</Badge> : null}
+                    <Badge variant={prospect.status === "completed" ? "success" : prospect.status === "failed" ? "destructive" : "muted"}>{formatLabel(prospect.status)}</Badge>
+                  </div>
                 </CardContent>
               </Card>
             </Link>
