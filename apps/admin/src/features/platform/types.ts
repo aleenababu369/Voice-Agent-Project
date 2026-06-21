@@ -48,9 +48,20 @@ export interface CallTranscriptEntry {
   at: string;
 }
 
+export interface CallUncertaintyDto {
+  confirmations: number;
+  reprompts: number;
+  confirmationTurns: number;
+  repromptTurns: number;
+  slotConfidence: Record<string, number>;
+  averageSlotConfidence: number;
+  pendingConfirmation?: { slotKey: string; value: string; confidence: number } | null;
+}
+
 export interface CallDetailDto {
   sessionId: string;
   tenantId: string;
+  uncertainty?: CallUncertaintyDto;
   agentProfileId?: string;
   prospectId?: string;
   campaignId?: string;

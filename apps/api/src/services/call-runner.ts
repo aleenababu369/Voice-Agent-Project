@@ -54,7 +54,10 @@ export async function processCallTurn(input: TurnInput): Promise<TurnOutput> {
     asrConfidence,
     nluConfidence,
     workflowCompleted: result.decision.action === "complete_call",
-    escalated: result.decision.action === "escalate_to_human"
+    escalated: result.decision.action === "escalate_to_human",
+    ...(result.decision.slotConfidence ? { slotConfidence: result.decision.slotConfidence } : {}),
+    confirmationTurn: result.decision.action === "confirm_slot",
+    repromptTurn: result.decision.action === "ask_clarification"
   });
 
   let operation: Operation | null = null;

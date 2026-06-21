@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-interface RecognitionResult { 0: { transcript: string }; isFinal: boolean }
+interface RecognitionResult { 0: { transcript: string; confidence: number }; isFinal: boolean }
 interface RecognitionEvent { results: ArrayLike<RecognitionResult> }
 interface RecognitionError { error: string }
 interface RecognitionInstance {
@@ -30,9 +30,35 @@ type RecognitionCtor = new () => RecognitionInstance;
 type Phase = "connecting" | "ringing" | "agent" | "listening" | "thinking" | "ended";
 
 const BARGE_MIN_WORDS = 2;
+// A reported recognition confidence below this is treated as ambient noise rather than the caller speaking.
+const NOISE_CONFIDENCE_FLOOR = 0.3;
+// Disfluencies/filler the recognizer emits for throat-clears, hesitation, and background murmur.
+const FILLER_PATTERN = /\b(uh+|um+|hmm+|mm+|mhm+|er+|err+|ah+|eh+|huh)\b/gi;
 
 function wordsOf(text: string): string[] {
   return text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+}
+
+/** Strip recognizer noise artifacts and filler so only meaningful speech reaches the agent and the LLM. */
+function denoise(text: string): string {
+  return text
+    .replace(/\[[^\]]*\]/g, " ") // bracketed artifacts: [noise], [music], [inaudible]
+    .replace(/\([^)]*\)/g, " ") // parenthetical artifacts: (background noise)
+    .replace(FILLER_PATTERN, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/** Decide whether a cleaned final result is just background noise (empty, a lone stray token, or very low confidence). */
+function isNoise(cleaned: string, confidence: number): boolean {
+  if (!cleaned) return true;
+  const words = wordsOf(cleaned);
+  if (words.length === 0) return true;
+  // Keep short but real answers like "yes"/"no"/"ok"; drop a single one-letter stray token.
+  if (words.length === 1 && (words[0]?.length ?? 0) < 2) return true;
+  // The recognizer gave a confidence and it's below the floor -> almost certainly ambient noise.
+  if (confidence > 0 && confidence < NOISE_CONFIDENCE_FLOOR) return true;
+  return false;
 }
 
 /** True when the recognized text mostly overlaps what the agent is currently saying (i.e. it's the speaker bleeding into the mic, not the user). */
@@ -71,6 +97,7 @@ export function SoftphonePage() {
   const ttsStartRef = useRef(0);
   const agentTextRef = useRef("");
   const autoAnsweredRef = useRef(false);
+  const micStreamRef = useRef<MediaStream | null>(null);
   const sendRef = useRef(call.sendUtterance);
 
   useEffect(() => { answeredRef.current = answered; }, [answered]);
@@ -121,6 +148,25 @@ export function SoftphonePage() {
     ensureListening();
   }, [auto, call.connected, call.grantConsent, ensureListening]);
 
+  // Engage the browser's audio DSP (noise suppression, echo cancellation, auto-gain) on the mic and prime permission.
+  // Keeping this stream open applies the processing to the live capture session that speech recognition reads from.
+  useEffect(() => {
+    const media = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+    if (!media?.getUserMedia) return;
+    let cancelled = false;
+    media.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+      .then((stream) => {
+        if (cancelled) { stream.getTracks().forEach((track) => track.stop()); return; }
+        micStreamRef.current = stream;
+      })
+      .catch(() => { /* mic denied or unavailable — recognition will prompt/fallback on its own */ });
+    return () => {
+      cancelled = true;
+      micStreamRef.current?.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
+    };
+  }, []);
+
   // Set up speech recognition once.
   useEffect(() => {
     const Ctor = (window as typeof window & { SpeechRecognition?: RecognitionCtor; webkitSpeechRecognition?: RecognitionCtor }).SpeechRecognition
@@ -142,12 +188,18 @@ export function SoftphonePage() {
     recognition.onresult = (event) => {
       let interim = "";
       let finalText = "";
+      let finalConfidence = 0;
       for (let i = 0; i < event.results.length; i += 1) {
         const result = event.results[i];
-        const text = result?.[0]?.transcript ?? "";
-        if (result?.isFinal) finalText += text; else interim += text;
+        const alt = result?.[0];
+        const text = alt?.transcript ?? "";
+        if (result?.isFinal) {
+          finalText += text;
+          // Web Speech reports a per-result confidence (0..1); keep the strongest final alternative.
+          if (typeof alt?.confidence === "number" && alt.confidence > finalConfidence) finalConfidence = alt.confidence;
+        } else interim += text;
       }
-      const candidate = (finalText || interim).trim();
+      const candidate = denoise(finalText || interim);
 
       if (ttsActiveRef.current) {
         // The agent is still talking. Decide: barge-in (real user) or echo (ignore).
@@ -166,8 +218,13 @@ export function SoftphonePage() {
       }
 
       if (finalText.trim() && !ttsActiveRef.current) {
+        // Drop background noise / stray blips before they ever reach the agent or the LLM; send only clean speech.
+        if (isNoise(candidate, finalConfidence)) {
+          if (!doneRef.current && answeredRef.current) setPhase("listening");
+          return;
+        }
         setPhase("thinking");
-        sendRef.current(finalText.trim());
+        sendRef.current(candidate, finalConfidence);
       }
     };
     recognition.onerror = (event) => {
@@ -220,7 +277,7 @@ export function SoftphonePage() {
     try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
     ttsActiveRef.current = false;
     setPhase("thinking");
-    call.sendUtterance(input.trim());
+    call.sendUtterance(input.trim(), 0.97); // typed text is unambiguous — high recognition confidence
     setInput("");
   }
 
@@ -271,6 +328,13 @@ export function SoftphonePage() {
               {phase === "thinking" ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
               {phase === "listening" ? <Mic className="h-4 w-4 text-emerald-600" /> : null}
             </div>
+
+            {call.confirming ? (
+              <div className="flex items-center justify-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                <span>Confirming your {call.confirming.slotKey.replace(/_/g, " ")}: <strong>{call.confirming.value}</strong> — say yes or no</span>
+              </div>
+            ) : null}
 
             <div className="max-h-[300px] min-h-[180px] space-y-3 overflow-auto rounded-xl bg-secondary/30 p-4">
               {call.messages.length === 0 ? <p className="text-sm text-muted-foreground">Waiting for the agent…</p> : call.messages.map((message) => (

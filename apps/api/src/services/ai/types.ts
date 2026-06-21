@@ -50,6 +50,8 @@ export interface LlmTurnRequest {
 export interface LlmTurnResult {
   reply: string;
   extractedFields: Record<string, string>;
+  /** Per-field 0..1 certainty the model has in each extracted value (uncertainty-aware dialogue management). */
+  fieldConfidence?: Record<string, number>;
   action: "ask_clarification" | "collect" | "complete" | "escalate";
   confidence: number;
 }

@@ -22,12 +22,13 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
     `Still missing: ${JSON.stringify(request.missing)}`,
     "",
     "Respond with ONLY a JSON object, no prose, in this exact shape:",
-    '{"reply": string, "extractedFields": {"<field_key>": "<value>"}, "action": "collect" | "complete" | "ask_clarification" | "escalate", "confidence": number}',
+    '{"reply": string, "extractedFields": {"<field_key>": "<value>"}, "fieldConfidence": {"<field_key>": number}, "action": "collect" | "complete" | "ask_clarification" | "escalate", "confidence": number}',
     "Rules:",
     "- Put a field in extractedFields ONLY if the caller actually stated it in their latest message. Use the exact field keys above.",
+    "- For every field you put in extractedFields, add the SAME key to fieldConfidence with your 0..1 certainty you heard that specific value correctly (lower it when the value was unclear, partial, spelled oddly, or ambiguous).",
     "- action = \"complete\" only when every required field is collected. Otherwise \"collect\".",
     "- action = \"escalate\" if the caller asks for a human or there is a safety concern.",
-    "- confidence is your 0..1 certainty in understanding the caller.",
+    "- confidence is your 0..1 certainty in understanding the caller overall.",
     "- reply is what you SAY next to the caller (short, spoken style)."
   ].join("\n");
 }
@@ -89,12 +90,19 @@ class OpenAiCompatibleLlmAdapter implements LlmTurnAdapter {
       for (const [key, value] of Object.entries(extracted)) {
         if (value !== null && value !== undefined && String(value).trim()) cleaned[key] = String(value).trim();
       }
+      const rawFieldConfidence = parsed.fieldConfidence && typeof parsed.fieldConfidence === "object" ? parsed.fieldConfidence : {};
+      const fieldConfidence: Record<string, number> = {};
+      for (const key of Object.keys(cleaned)) {
+        const raw = (rawFieldConfidence as Record<string, unknown>)[key];
+        if (typeof raw === "number" && Number.isFinite(raw)) fieldConfidence[key] = Math.min(1, Math.max(0, raw));
+      }
       const action = ["ask_clarification", "collect", "complete", "escalate"].includes(parsed.action as string)
         ? (parsed.action as LlmTurnResult["action"])
         : "collect";
       return {
         reply: parsed.reply,
         extractedFields: cleaned,
+        fieldConfidence,
         action,
         confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.85
       };

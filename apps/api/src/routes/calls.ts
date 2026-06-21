@@ -337,10 +337,27 @@ export function registerCallRoutes(app: FastifyInstance) {
     }
 
     const average = (values: number[]) => (values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length);
+    const round2 = (value: number) => Number(value.toFixed(2));
+
+    // Uncertainty-aware dialogue management: final per-slot belief + grounding-action counts for this call.
+    const slotConfidence = session.slotState.confidence ?? {};
+    const slotConfidenceValues = Object.values(slotConfidence).map((value) => round2(value));
+    const slotConfidenceRounded: Record<string, number> = {};
+    for (const [key, value] of Object.entries(slotConfidence)) slotConfidenceRounded[key] = round2(value);
+    const uncertainty = {
+      confirmations: session.slotState.confirmations ?? 0,
+      reprompts: session.slotState.reprompts ?? 0,
+      confirmationTurns: metrics.filter((metric) => metric.confirmationTurn).length,
+      repromptTurns: metrics.filter((metric) => metric.repromptTurn).length,
+      slotConfidence: slotConfidenceRounded,
+      averageSlotConfidence: slotConfidenceValues.length === 0 ? 0 : round2(average(slotConfidenceValues)),
+      pendingConfirmation: session.slotState.pendingConfirmation ?? null
+    };
 
     return {
       sessionId: session.id,
       tenantId: session.tenantId,
+      uncertainty,
       ...(session.agentProfileId ? { agentProfileId: session.agentProfileId } : {}),
       ...(session.prospectId ? { prospectId: session.prospectId } : {}),
       ...(session.campaignId ? { campaignId: session.campaignId } : {}),

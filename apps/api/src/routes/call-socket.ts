@@ -72,7 +72,7 @@ export function registerCallSocketRoutes(app: FastifyInstance) {
       });
 
       socket.on("message", async (raw: Buffer) => {
-        let message: { type?: string; text?: string; granted?: boolean };
+        let message: { type?: string; text?: string; granted?: boolean; asrConfidence?: number };
         try {
           message = JSON.parse(raw.toString());
         } catch {
@@ -101,7 +101,9 @@ export function registerCallSocketRoutes(app: FastifyInstance) {
             session = (await persistenceService.captureConsent(sessionId, true)) ?? session;
           }
           broadcast(room, { type: "caller_said", text: message.text });
-          const result = await processCallTurn({ session, profile, transcript: message.text });
+          // The softphone sends the browser's speech-recognition confidence so the agent can reason about uncertainty.
+          const asrConfidence = typeof message.asrConfidence === "number" && message.asrConfidence > 0 ? Math.min(1, message.asrConfidence) : undefined;
+          const result = await processCallTurn({ session, profile, transcript: message.text, ...(asrConfidence !== undefined ? { asrConfidence } : {}) });
           const done = result.decision.action === "complete_call" || result.decision.action === "escalate_to_human";
           broadcast(room, { type: "agent_reply", reply: result.decision.responseText, decision: result.decision, session: result.session, operation: result.operation, done });
           return;

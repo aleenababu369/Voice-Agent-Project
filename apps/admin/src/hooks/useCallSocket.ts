@@ -7,12 +7,22 @@ export interface CallMessage {
   text: string;
 }
 
+interface ConfirmingSlot {
+  slotKey: string;
+  value: string;
+  confidence: number;
+}
+
 interface CallSocketState {
   connected: boolean;
   messages: CallMessage[];
   needsConsent: boolean;
   done: boolean;
   lastAgentReply: string;
+  /** Uncertainty-aware dialogue management: what grounding action the agent just took. */
+  lastAction: string | null;
+  lastConfidence: number | null;
+  confirming: ConfirmingSlot | null;
 }
 
 function speakText(text: string, lang: string) {
@@ -34,7 +44,7 @@ export function useCallSocket(options: { sessionId: string | null; role: "agent"
   const language = useAppSelector((state) => state.demo.selectedLanguage);
   const wsRef = useRef<WebSocket | null>(null);
   const counter = useRef(0);
-  const [state, setState] = useState<CallSocketState>({ connected: false, messages: [], needsConsent: false, done: false, lastAgentReply: "" });
+  const [state, setState] = useState<CallSocketState>({ connected: false, messages: [], needsConsent: false, done: false, lastAgentReply: "", lastAction: null, lastConfidence: null, confirming: null });
 
   const push = useCallback((role: CallMessage["role"], text: string) => {
     counter.current += 1;
@@ -55,7 +65,14 @@ export function useCallSocket(options: { sessionId: string | null; role: "agent"
     ws.onopen = () => setState((current) => ({ ...current, connected: true }));
     ws.onclose = () => setState((current) => ({ ...current, connected: false }));
     ws.onmessage = (event) => {
-      let message: { type?: string; reply?: string; text?: string; needsConsent?: boolean; done?: boolean };
+      let message: {
+        type?: string;
+        reply?: string;
+        text?: string;
+        needsConsent?: boolean;
+        done?: boolean;
+        decision?: { action?: string; confidence?: number; confirming?: ConfirmingSlot | null };
+      };
       try {
         message = JSON.parse(event.data);
       } catch {
@@ -64,7 +81,16 @@ export function useCallSocket(options: { sessionId: string | null; role: "agent"
       if (message.type === "agent_reply" && typeof message.reply === "string") {
         push("agent", message.reply);
         if (speak) speakText(message.reply, language);
-        setState((current) => ({ ...current, needsConsent: Boolean(message.needsConsent), done: Boolean(message.done), lastAgentReply: message.reply as string }));
+        const decision = message.decision;
+        setState((current) => ({
+          ...current,
+          needsConsent: Boolean(message.needsConsent),
+          done: Boolean(message.done),
+          lastAgentReply: message.reply as string,
+          lastAction: decision?.action ?? current.lastAction,
+          lastConfidence: typeof decision?.confidence === "number" ? decision.confidence : current.lastConfidence,
+          confirming: decision?.action === "confirm_slot" ? (decision.confirming ?? null) : null
+        }));
       } else if (message.type === "caller_said" && typeof message.text === "string") {
         push("caller", message.text);
       } else if (message.type === "ended") {
@@ -78,9 +104,11 @@ export function useCallSocket(options: { sessionId: string | null; role: "agent"
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, role, baseUrl]);
 
-  const sendUtterance = useCallback((text: string) => {
+  const sendUtterance = useCallback((text: string, asrConfidence?: number) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && text.trim()) {
-      wsRef.current.send(JSON.stringify({ type: "prospect_utterance", text }));
+      const payload: { type: string; text: string; asrConfidence?: number } = { type: "prospect_utterance", text };
+      if (typeof asrConfidence === "number" && asrConfidence > 0) payload.asrConfidence = asrConfidence;
+      wsRef.current.send(JSON.stringify(payload));
     }
   }, []);
 

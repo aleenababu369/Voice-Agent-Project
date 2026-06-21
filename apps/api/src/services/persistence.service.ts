@@ -138,6 +138,7 @@ class PersistenceService {
     const statusMap: Record<TurnApplicationResult["decision"]["action"], CallSession["status"]> = {
       ask_consent: "consent_pending",
       ask_clarification: "clarification_required",
+      confirm_slot: "active",
       respond: "active",
       execute_task: "active",
       escalate_to_human: "escalated",
@@ -149,7 +150,7 @@ class PersistenceService {
     await this.recordEvent({
       sessionId: id,
       type: result.decision.action === "complete_call" ? "workflow_completed" : "turn_processed",
-      payload: { tenantId: updated.tenantId, action: result.decision.action, reason: result.decision.reason, confidence: result.decision.confidence, transcript, responseText: result.decision.responseText, missingSlots: result.decision.missingSlots ?? [], collected: updated.slotState.collected, aiMetadata: result.decision.aiMetadata ?? null },
+      payload: { tenantId: updated.tenantId, action: result.decision.action, reason: result.decision.reason, confidence: result.decision.confidence, transcript, responseText: result.decision.responseText, missingSlots: result.decision.missingSlots ?? [], collected: updated.slotState.collected, slotConfidence: result.decision.slotConfidence ?? updated.slotState.confidence ?? null, confirming: result.decision.confirming ?? null, aiMetadata: result.decision.aiMetadata ?? null },
       createdAt: updated.updatedAt
     });
     if (result.decision.escalationSummary) {

@@ -36,5 +36,8 @@ export function buildProspectUtterance(profile: AgentProfile, prospect?: Prospec
 
 /** The next thing the simulated prospect says. For the hands-free dialer this answers everything in one turn. */
 export function simulateProspectReply(input: { profile: AgentProfile; session: CallSession; prospect?: Prospect }): string {
+  // If the agent asked the caller to confirm a medium-confidence value, the simulated prospect agrees.
+  // This both exercises the uncertainty-aware confirmation flow and keeps the hands-free loop from stalling.
+  if (input.session.slotState.pendingConfirmation) return "Yes, that's correct.";
   return buildProspectUtterance(input.profile, input.prospect);
 }

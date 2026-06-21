@@ -1,5 +1,20 @@
 import type { AgentProfile, WorkflowType } from "../../../../packages/contracts/src/index.ts";
 
+/** A rule-extracted slot value plus a heuristic confidence reflecting how specific/reliable the matching pattern is. */
+export interface ScoredSlot {
+  value: string;
+  confidence: number;
+}
+
+// Per-pattern reliability. Tight, unambiguous patterns (dates, ids, numbers) score high; loose
+// free-text or greedy name/department captures score lower so the grounding policy confirms them.
+const SCORE = {
+  precise: 0.85, // age, ids, phone numbers, explicit dates/times
+  moderate: 0.7, // keyword-anchored statuses
+  loose: 0.62, // greedy name / doctor / department / program captures
+  freeText: 0.5 // "whatever the caller said" dumped into a free-text slot
+} as const;
+
 class SlotExtractor {
   extract(workflow: WorkflowType, transcript: string) {
     return this.extractByKeys(this.defaultKeysForWorkflow(workflow), transcript);
@@ -9,9 +24,25 @@ class SlotExtractor {
     return this.extractByKeys(profile.slots.map((slot) => slot.key), transcript);
   }
 
-  private extractByKeys(keys: string[], transcript: string) {
-    const lowered = transcript.toLowerCase();
+  /** Like {@link extractProfile} but each value carries a confidence for uncertainty-aware dialogue management. */
+  extractProfileScored(profile: AgentProfile, transcript: string): Record<string, ScoredSlot> {
+    return this.extractScored(profile.slots.map((slot) => slot.key), transcript);
+  }
+
+  private extractByKeys(keys: string[], transcript: string): Record<string, string> {
+    const scored = this.extractScored(keys, transcript);
     const slots: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(scored)) slots[key] = entry.value;
+    return slots;
+  }
+
+  private extractScored(keys: string[], transcript: string): Record<string, ScoredSlot> {
+    const lowered = transcript.toLowerCase();
+    const slots: Record<string, ScoredSlot> = {};
+    const set = (key: string, value: string | undefined, confidence: number) => {
+      const cleaned = value?.trim();
+      if (cleaned) slots[key] = { value: cleaned, confidence };
+    };
 
     const nameMatch = transcript.match(/(?:i am|this is|patient is|mera naam|my name is|hesaru|name is)\s+([a-zA-Z ]{2,}?)(?=\s+(?:and|for|need|want|on|at|ko|ge|age|issue|doctor|program|department|purpose)\b|$)/i);
     const dateMatch = transcript.match(/\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|tomorrow|today|kal|naale|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
@@ -21,34 +52,34 @@ class SlotExtractor {
     const contactMatch = transcript.match(/\b(?:phone|number|contact|callback)\s*[:#-]?\s*(\+?\d[\d -]{7,})\b/i);
     const doctorMatch = transcript.match(/\b(?:doctor|dr\.?|department)\s*[:#-]?\s*([a-zA-Z ]{2,})\b/i);
 
-    if (keys.includes("patient_name") && nameMatch?.[1]) slots.patient_name = nameMatch[1].trim();
-    if (keys.includes("visitor_name") && nameMatch?.[1]) slots.visitor_name = nameMatch[1].trim();
-    if (keys.includes("caller_name") && nameMatch?.[1]) slots.caller_name = nameMatch[1].trim();
-    if (keys.includes("preferred_date") && dateMatch?.[1]) slots.preferred_date = dateMatch[1].trim();
-    if (keys.includes("preferred_time") && timeMatch?.[1]) slots.preferred_time = timeMatch[1].trim();
-    if (keys.includes("age") && ageMatch?.[1]) slots.age = ageMatch[1].trim();
-    if (keys.includes("student_id") && genericIdMatch?.[1]) slots.student_id = genericIdMatch[1];
-    if (keys.includes("patient_id") && genericIdMatch?.[1]) slots.patient_id = genericIdMatch[1];
-    if (keys.includes("contact_number") && contactMatch?.[1]) slots.contact_number = contactMatch[1].trim();
-    if (keys.includes("callback_number") && contactMatch?.[1]) slots.callback_number = contactMatch[1].trim();
-    if (keys.includes("doctor_name") && doctorMatch?.[1]) slots.doctor_name = doctorMatch[1].trim();
+    if (keys.includes("patient_name")) set("patient_name", nameMatch?.[1], SCORE.loose);
+    if (keys.includes("visitor_name")) set("visitor_name", nameMatch?.[1], SCORE.loose);
+    if (keys.includes("caller_name")) set("caller_name", nameMatch?.[1], SCORE.loose);
+    if (keys.includes("preferred_date")) set("preferred_date", dateMatch?.[1], SCORE.precise);
+    if (keys.includes("preferred_time")) set("preferred_time", timeMatch?.[1], SCORE.precise);
+    if (keys.includes("age")) set("age", ageMatch?.[1], SCORE.precise);
+    if (keys.includes("student_id")) set("student_id", genericIdMatch?.[1], SCORE.precise);
+    if (keys.includes("patient_id")) set("patient_id", genericIdMatch?.[1], SCORE.precise);
+    if (keys.includes("contact_number")) set("contact_number", contactMatch?.[1], SCORE.precise);
+    if (keys.includes("callback_number")) set("callback_number", contactMatch?.[1], SCORE.precise);
+    if (keys.includes("doctor_name")) set("doctor_name", doctorMatch?.[1], SCORE.loose);
 
-    if (keys.includes("issue") && transcript.trim()) slots.issue = transcript.trim();
-    if (keys.includes("purpose") && transcript.trim()) slots.purpose = transcript.trim();
-    if (keys.includes("inquiry_topic") && transcript.trim()) slots.inquiry_topic = transcript.trim();
+    if (keys.includes("issue")) set("issue", transcript, SCORE.freeText);
+    if (keys.includes("purpose")) set("purpose", transcript, SCORE.freeText);
+    if (keys.includes("inquiry_topic")) set("inquiry_topic", transcript, SCORE.freeText);
 
-    if (keys.includes("acknowledgement_status") && /(received|paid|okay|acknowledged|yes|haan|haanji|sari|got it)/i.test(lowered)) slots.acknowledgement_status = "acknowledged";
-    if (keys.includes("confirmation_status") && /(yes|confirmed|can attend|available|haan|barteeni|confirm)/i.test(lowered)) slots.confirmation_status = "confirmed";
-    if (keys.includes("confirmation_status") && /(no|cannot|can't attend|not available|nahi|baralla)/i.test(lowered)) slots.confirmation_status = "not_confirmed";
+    if (keys.includes("acknowledgement_status") && /(received|paid|okay|acknowledged|yes|haan|haanji|sari|got it)/i.test(lowered)) set("acknowledgement_status", "acknowledged", SCORE.moderate);
+    if (keys.includes("confirmation_status") && /(yes|confirmed|can attend|available|haan|barteeni|confirm)/i.test(lowered)) set("confirmation_status", "confirmed", SCORE.moderate);
+    if (keys.includes("confirmation_status") && /(no|cannot|can't attend|not available|nahi|baralla)/i.test(lowered)) set("confirmation_status", "not_confirmed", SCORE.moderate);
 
     if (keys.includes("department")) {
       const departmentMatch = transcript.match(/\b(?:department|team|office)\s*[:#-]?\s*([a-zA-Z ]{2,})\b/i);
-      if (departmentMatch?.[1]) slots.department = departmentMatch[1].trim();
+      set("department", departmentMatch?.[1], SCORE.loose);
     }
 
     if (keys.includes("program_interest")) {
       const programMatch = transcript.match(/\b(?:program|course|admission for|interested in)\s*[:#-]?\s*([a-zA-Z .&-]{2,})\b/i);
-      if (programMatch?.[1]) slots.program_interest = programMatch[1].trim();
+      set("program_interest", programMatch?.[1], SCORE.loose);
     }
 
     return slots;

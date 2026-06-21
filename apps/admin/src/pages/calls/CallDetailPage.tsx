@@ -96,6 +96,41 @@ export function CallDetailPage() {
             </CardContent>
           </Card>
 
+          {detail.uncertainty ? (
+            <Card>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between">
+                  <Eyebrow>Dialogue confidence</Eyebrow>
+                  <Badge variant="muted">{Math.round(detail.uncertainty.averageSlotConfidence * 100)}% avg</Badge>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded-lg bg-secondary/50 px-3 py-2"><div className="text-xs uppercase tracking-wide text-muted-foreground">Confirmations</div><div className="mt-0.5 text-lg font-semibold">{detail.uncertainty.confirmations}</div></div>
+                  <div className="rounded-lg bg-secondary/50 px-3 py-2"><div className="text-xs uppercase tracking-wide text-muted-foreground">Re-prompts</div><div className="mt-0.5 text-lg font-semibold">{detail.uncertainty.reprompts}</div></div>
+                </div>
+                {Object.keys(detail.uncertainty.slotConfidence).length > 0 ? (
+                  <div className="mt-4 space-y-2.5">
+                    {Object.entries(detail.uncertainty.slotConfidence).map(([key, value]) => {
+                      const pct = Math.round(value * 100);
+                      const band = value >= 0.7 ? "high" : value >= 0.4 ? "medium" : "low";
+                      return (
+                        <div key={key}>
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">{key}</span>
+                            <span className="font-mono">{pct}% · {band}</span>
+                          </div>
+                          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
+                            <div className={cn("h-full rounded-full", band === "high" ? "bg-zinc-900" : band === "medium" ? "bg-zinc-500" : "bg-zinc-300")} style={{ width: `${Math.max(4, pct)}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : <p className="mt-3 text-xs text-muted-foreground">No per-field confidence recorded for this call.</p>}
+                <p className="mt-3 text-xs text-muted-foreground">High = accepted · Medium = confirmed with the caller · Low = re-prompted.</p>
+              </CardContent>
+            </Card>
+          ) : null}
+
           <Card>
             <CardContent className="space-y-3 p-5">
               <Eyebrow>Outcome & follow-up</Eyebrow>

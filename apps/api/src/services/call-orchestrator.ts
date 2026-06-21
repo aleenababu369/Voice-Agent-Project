@@ -4,12 +4,14 @@ import type {
   CallSlotState,
   EscalationSummary,
   OrchestratorDecision,
+  PendingConfirmation,
   WorkflowDefinition
 } from "../../../../packages/contracts/src/index.ts";
 import { aiAdapters } from "./ai/mock-adapters.ts";
 import { getLlmTurnAdapter } from "./ai/openai-compatible-adapter.ts";
 import { slotExtractor } from "./slot-extractor.ts";
 import { safetyPolicy } from "./safety-policy.ts";
+import { bandFor, clamp01, combineConfidence, getUncertaintyThresholds, interpretConfirmation } from "./dialogue/uncertainty.ts";
 
 interface ProcessTurnInput {
   session: CallSession;
@@ -27,32 +29,76 @@ interface ProcessTurnResult {
   allSlotsCollected: boolean;
 }
 
+/** Mutable belief carried across the turn while the grounding policy runs. */
+interface BeliefState {
+  confidence: Record<string, number>;
+  attempts: Record<string, number>;
+  confirmations: number;
+  reprompts: number;
+}
+
 class CallOrchestrator {
   async processTurn(input: ProcessTurnInput): Promise<ProcessTurnResult> {
     const asrResult = await aiAdapters.asr.transcribe({ transcript: input.transcript, confidence: input.asrConfidence, language: input.session.language });
     const confidence = Math.min(asrResult.confidence, input.nluConfidence);
     const transcript = asrResult.transcript;
+    const prior = input.session.slotState;
 
     if (!input.session.consentCaptured) {
-      return this.buildDecision({ input, action: "ask_consent", confidence, slotState: input.session.slotState, missingSlots: input.session.slotState.missing, responseText: input.profile.welcomeMessage, reason: "Consent is required before the workflow can continue.", promptStyle: "consent" });
+      return this.buildDecision({ input, action: "ask_consent", confidence, slotState: prior, missingSlots: prior.missing, responseText: input.profile.welcomeMessage, reason: "Consent is required before the workflow can continue.", promptStyle: "consent" });
     }
 
     const safetyTrigger = safetyPolicy.evaluate(transcript, confidence);
     if (safetyTrigger) {
       const escalationSummary: EscalationSummary = { trigger: safetyTrigger.trigger, reason: safetyTrigger.reason, lastTranscript: transcript, recommendedAction: safetyTrigger.recommendedAction };
-      return this.buildDecision({ input, action: "escalate_to_human", confidence, slotState: input.session.slotState, missingSlots: input.session.slotState.missing, responseText: input.profile.escalationMessage, reason: safetyTrigger.reason, promptStyle: "escalation", escalationSummary });
+      return this.buildDecision({ input, action: "escalate_to_human", confidence, slotState: prior, missingSlots: prior.missing, responseText: input.profile.escalationMessage, reason: safetyTrigger.reason, promptStyle: "escalation", escalationSummary });
     }
 
+    // Utterance-level floor: if we barely heard the caller at all, ask them to repeat the whole thing.
     if (confidence < 0.6) {
-      return this.buildDecision({ input, action: "ask_clarification", confidence, slotState: input.session.slotState, missingSlots: input.session.slotState.missing, responseText: "I want to make sure I understood you. Could you please repeat that more clearly?", reason: "Recognition confidence is below the safe threshold.", promptStyle: "clarification" });
+      return this.buildDecision({ input, action: "ask_clarification", confidence, slotState: prior, missingSlots: prior.missing, responseText: "I want to make sure I understood you. Could you please repeat that more clearly?", reason: "Recognition confidence is below the safe threshold.", promptStyle: "clarification" });
     }
 
     const requiredSlots = input.profile.slots.filter((slot) => slot.required).map((slot) => slot.key);
-    const priorMissing = requiredSlots.filter((slot) => !input.session.slotState.collected[slot]);
+    const thresholds = getUncertaintyThresholds();
+    const belief: BeliefState = {
+      confidence: { ...(prior.confidence ?? {}) },
+      attempts: { ...(prior.attempts ?? {}) },
+      confirmations: prior.confirmations ?? 0,
+      reprompts: prior.reprompts ?? 0
+    };
 
-    // Real LLM turn (when configured) drives the reply + extraction; the rule extractor backfills for recall.
-    const ruleSlots = slotExtractor.extractProfile(input.profile, transcript);
+    // (1) GROUNDING — if a medium-confidence value is awaiting an explicit yes/no, resolve that first.
+    const pending = prior.pendingConfirmation;
+    if (pending) {
+      const verdict = interpretConfirmation(transcript);
+      if (verdict === "yes") {
+        belief.confirmations += 1;
+        const grounded = Math.max(pending.confidence, 0.99);
+        const collected = { ...prior.collected, [pending.slotKey]: pending.value };
+        belief.confidence[pending.slotKey] = grounded;
+        const missingSlots = requiredSlots.filter((slot) => !collected[slot]);
+        const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
+        return this.advanceAfterCollection({ input, confidence: grounded, slotState, missingSlots, justAccepted: [pending.slotKey], llmText: null });
+      }
+      if (verdict === "no") {
+        belief.reprompts += 1;
+        belief.attempts[pending.slotKey] = (belief.attempts[pending.slotKey] ?? 0) + 1;
+        const collected = { ...prior.collected };
+        const missingSlots = requiredSlots.filter((slot) => !collected[slot]);
+        const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
+        const responseText = `No problem — let's try that again. ${this.buildNextPrompt(input.profile, pending.slotKey)}`;
+        return this.buildDecision({ input, action: "ask_clarification", confidence: input.nluConfidence, slotState, missingSlots, responseText, reason: `Caller rejected the proposed value for ${pending.slotKey}; re-prompting.`, promptStyle: "clarification", verbatim: true, slotConfidence: belief.confidence, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts } });
+      }
+      // verdict "unknown" -> the caller likely restated the value instead of saying yes/no; fall through and re-extract.
+    }
+
+    // (2) EXTRACTION — rule + (optional) LLM, each value carrying its own confidence.
+    const priorMissing = requiredSlots.filter((slot) => !prior.collected[slot]);
+    const ruleScored = slotExtractor.extractProfileScored(input.profile, transcript);
     let llmSlots: Record<string, string> = {};
+    let llmFieldConfidence: Record<string, number> = {};
+    let llmOverall = 0.85;
     let llmReply: string | null = null;
     let llmEscalate = false;
     const adapter = getLlmTurnAdapter();
@@ -62,42 +108,149 @@ class CallOrchestrator {
         welcomeMessage: input.profile.welcomeMessage,
         language: input.session.language,
         slots: input.profile.slots,
-        collected: input.session.slotState.collected,
+        collected: prior.collected,
         missing: priorMissing,
         transcript
       });
       if (turn) {
         llmSlots = turn.extractedFields;
+        llmFieldConfidence = turn.fieldConfidence ?? {};
+        llmOverall = turn.confidence;
         llmReply = turn.reply;
         llmEscalate = turn.action === "escalate";
       }
     }
 
-    // Only fill slots that are not already collected, so good values are never clobbered by a later turn.
-    // The LLM is preferred per slot; the rule extractor backfills anything the model missed.
-    const extractedSlots: Record<string, string> = {};
-    for (const slot of input.profile.slots) {
-      if (input.session.slotState.collected[slot.key] !== undefined) continue;
-      const llmValue = llmSlots[slot.key];
-      if (llmValue !== undefined && String(llmValue).trim()) extractedSlots[slot.key] = String(llmValue).trim();
-      else if (ruleSlots[slot.key] !== undefined) extractedSlots[slot.key] = ruleSlots[slot.key]!;
-    }
-
-    const collected = { ...input.session.slotState.collected, ...extractedSlots };
-    const missingSlots = requiredSlots.filter((slot) => !collected[slot]);
-    const slotState: CallSlotState = { required: requiredSlots, collected, missing: missingSlots };
-
     if (llmEscalate) {
       const escalationSummary: EscalationSummary = { trigger: "manual_request", reason: "The caller asked to speak with a human representative.", lastTranscript: transcript, recommendedAction: "Transfer the call to an operator with the conversation summary." };
-      return this.buildDecision({ input, action: "escalate_to_human", confidence, slotState, missingSlots, responseText: llmReply ?? input.profile.escalationMessage, reason: escalationSummary.reason, promptStyle: "escalation", escalationSummary, llmText: llmReply });
+      const slotState = this.composeSlotState(requiredSlots, { ...prior.collected }, priorMissing, belief);
+      return this.buildDecision({ input, action: "escalate_to_human", confidence, slotState, missingSlots: priorMissing, responseText: llmReply ?? input.profile.escalationMessage, reason: escalationSummary.reason, promptStyle: "escalation", escalationSummary, llmText: llmReply });
     }
 
-    if (missingSlots.length === 0) {
-      return this.buildDecision({ input, action: "complete_call", confidence, slotState, missingSlots, responseText: llmReply ?? this.buildCompletionMessage(input.profile, collected), reason: "All required workflow slots are collected.", promptStyle: "completion", extractedSlots, allSlotsCollected: true, llmText: llmReply });
+    // (3) GROUNDING POLICY — band every freshly extracted value: accept (high) / confirm (medium) / re-prompt (low).
+    const collected = { ...prior.collected };
+    const accepted: string[] = [];
+    let confirmTarget: PendingConfirmation | null = null;
+    let repromptTarget: string | null = null;
+
+    for (const slot of input.profile.slots) {
+      if (collected[slot.key] !== undefined) continue;
+      let value: string | undefined;
+      let nlu: number | undefined;
+      const llmValue = llmSlots[slot.key];
+      const scored = ruleScored[slot.key];
+      if (llmValue !== undefined && String(llmValue).trim()) {
+        value = String(llmValue).trim();
+        nlu = clamp01(llmFieldConfidence[slot.key] ?? llmOverall);
+      } else if (scored) {
+        value = scored.value;
+        nlu = scored.confidence;
+      }
+      if (value === undefined || nlu === undefined) continue;
+
+      const combined = combineConfidence(asrResult.confidence, nlu);
+      const band = bandFor(combined, thresholds);
+      const attemptsForSlot = belief.attempts[slot.key] ?? 0;
+
+      // Loop guard: after repeated failed asks, accept the best value so the call can finish.
+      if (attemptsForSlot >= thresholds.maxAttempts) {
+        this.acceptValue(collected, belief, accepted, slot.key, value, combined);
+      } else if (band === "high") {
+        this.acceptValue(collected, belief, accepted, slot.key, value, combined);
+      } else if (band === "medium") {
+        if (slot.required) {
+          if (!confirmTarget) confirmTarget = { slotKey: slot.key, value, confidence: combined };
+        } else {
+          // Optional fields are opportunistic — store medium-confidence values without blocking the flow.
+          this.acceptValue(collected, belief, accepted, slot.key, value, combined);
+        }
+      } else if (slot.required && !repromptTarget) {
+        repromptTarget = slot.key;
+      }
     }
 
-    const nextPrompt = llmReply ?? this.buildNextPrompt(input.profile, missingSlots[0]);
-    return this.buildDecision({ input, action: Object.keys(extractedSlots).length > 0 ? "execute_task" : "respond", confidence, slotState, missingSlots, responseText: nextPrompt, reason: "The workflow is still collecting required fields.", promptStyle: "workflow", extractedSlots, llmText: llmReply });
+    const missingSlots = requiredSlots.filter((slot) => !collected[slot]);
+
+    // (3a) Explicit confirmation takes priority — the value is held OUT of `collected` until grounded.
+    if (confirmTarget) {
+      belief.attempts[confirmTarget.slotKey] = (belief.attempts[confirmTarget.slotKey] ?? 0) + 1;
+      const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief, confirmTarget);
+      const label = this.labelForSlot(input.profile, confirmTarget.slotKey);
+      const responseText = `Just to confirm, your ${label} is ${confirmTarget.value} — is that correct?`;
+      return this.buildDecision({ input, action: "confirm_slot", confidence: confirmTarget.confidence, slotState, missingSlots, responseText, reason: `Medium confidence on ${confirmTarget.slotKey}; asking the caller to confirm.`, promptStyle: "clarification", verbatim: true, extractedSlots: this.pick(collected, accepted), slotConfidence: belief.confidence, confirming: confirmTarget, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts, pendingSlot: confirmTarget.slotKey } });
+    }
+
+    // (3b) Re-prompt a required slot we heard but couldn't trust.
+    if (repromptTarget) {
+      belief.reprompts += 1;
+      belief.attempts[repromptTarget] = (belief.attempts[repromptTarget] ?? 0) + 1;
+      const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
+      const label = this.labelForSlot(input.profile, repromptTarget);
+      const responseText = `Sorry, I didn't catch your ${label} clearly. Could you say it once more?`;
+      return this.buildDecision({ input, action: "ask_clarification", confidence: input.nluConfidence, slotState, missingSlots, responseText, reason: `Low confidence on ${repromptTarget}; re-prompting.`, promptStyle: "clarification", verbatim: true, extractedSlots: this.pick(collected, accepted), slotConfidence: belief.confidence, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts } });
+    }
+
+    // (3c) Nothing to confirm or re-prompt — proceed normally (complete or ask the next field).
+    const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
+    return this.advanceAfterCollection({ input, confidence, slotState, missingSlots, justAccepted: accepted, llmText: llmReply });
+  }
+
+  private acceptValue(collected: Record<string, string>, belief: BeliefState, accepted: string[], key: string, value: string, confidence: number) {
+    collected[key] = value;
+    belief.confidence[key] = confidence;
+    accepted.push(key);
+  }
+
+  /** Shared tail for "no grounding action needed": either complete the call or ask for the next missing field. */
+  private async advanceAfterCollection(args: { input: ProcessTurnInput; confidence: number; slotState: CallSlotState; missingSlots: string[]; justAccepted: string[]; llmText: string | null }): Promise<ProcessTurnResult> {
+    const extractedSlots = this.pick(args.slotState.collected, args.justAccepted);
+    const uncertainty = { confirmations: args.slotState.confirmations ?? 0, reprompts: args.slotState.reprompts ?? 0 };
+    const slotConfidence = args.slotState.confidence ?? {};
+
+    if (args.missingSlots.length === 0) {
+      const responseText = args.llmText ?? this.buildCompletionMessage(args.input.profile, args.slotState.collected);
+      return this.buildDecision({ input: args.input, action: "complete_call", confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "All required workflow slots are collected.", promptStyle: "completion", extractedSlots, allSlotsCollected: true, llmText: args.llmText, slotConfidence, uncertainty });
+    }
+
+    // Implicit confirmation: read freshly accepted values back to the caller as part of the next question.
+    let responseText: string;
+    let verbatim = false;
+    if (args.llmText) {
+      responseText = args.llmText;
+    } else {
+      const firstAccepted = args.justAccepted[0];
+      const readback = args.justAccepted.length === 1 && firstAccepted
+        ? `Got it — ${this.labelForSlot(args.input.profile, firstAccepted)}: ${args.slotState.collected[firstAccepted] ?? ""}. `
+        : args.justAccepted.length > 1 ? "Got those, thank you. " : "";
+      responseText = `${readback}${this.buildNextPrompt(args.input.profile, args.missingSlots[0])}`;
+      verbatim = readback.length > 0; // keep the readback intact; otherwise let the mock LLM phrase the prompt
+    }
+    const action: OrchestratorDecision["action"] = args.justAccepted.length > 0 ? "execute_task" : "respond";
+    return this.buildDecision({ input: args.input, action, confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "The workflow is still collecting required fields.", promptStyle: "workflow", extractedSlots, llmText: args.llmText, verbatim, slotConfidence, uncertainty });
+  }
+
+  private composeSlotState(required: string[], collected: Record<string, string>, missing: string[], belief: BeliefState, pendingConfirmation?: PendingConfirmation): CallSlotState {
+    return {
+      required,
+      collected,
+      missing,
+      confidence: belief.confidence,
+      attempts: belief.attempts,
+      confirmations: belief.confirmations,
+      reprompts: belief.reprompts,
+      ...(pendingConfirmation ? { pendingConfirmation } : {})
+    };
+  }
+
+  private pick(source: Record<string, string>, keys: string[]): Record<string, string> | undefined {
+    if (keys.length === 0) return undefined;
+    const out: Record<string, string> = {};
+    for (const key of keys) if (source[key] !== undefined) out[key] = source[key];
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  private labelForSlot(profile: AgentProfile, key: string): string {
+    return profile.slots.find((slot) => slot.key === key)?.label ?? key.replace(/_/g, " ");
   }
 
   private async buildDecision(args: {
@@ -113,12 +266,21 @@ class CallOrchestrator {
     escalationSummary?: EscalationSummary;
     allSlotsCollected?: boolean;
     llmText?: string | null;
+    verbatim?: boolean;
+    slotConfidence?: Record<string, number>;
+    confirming?: PendingConfirmation;
+    uncertainty?: { confirmations: number; reprompts: number; pendingSlot?: string };
   }): Promise<ProcessTurnResult> {
     let replyText: string;
     let llmProvider: "mock" | "openai-compatible";
     if (args.llmText) {
+      // The real LLM already phrased a natural reply.
       replyText = args.llmText;
       llmProvider = "openai-compatible";
+    } else if (args.verbatim) {
+      // Grounding prompts (confirm / re-prompt / readback) must reach the caller exactly as written.
+      replyText = args.responseText;
+      llmProvider = "mock";
     } else {
       const llmContext = { session: args.input.session, workflow: args.input.workflow, action: args.promptStyle, collectedSlots: args.slotState.collected, missingSlots: args.missingSlots, fallbackText: args.responseText, ...(args.missingSlots[0] ? { nextSlot: args.missingSlots[0] } : {}) };
       const llmResult = await aiAdapters.llm.generate(llmContext);
@@ -126,8 +288,19 @@ class CallOrchestrator {
       llmProvider = llmResult.provider;
     }
     const ttsResult = await aiAdapters.tts.synthesize({ text: replyText, language: args.input.session.language, domain: args.input.session.domain });
-    const decisionBase: OrchestratorDecision = { action: args.action, confidence: args.confidence, reason: args.reason, responseText: replyText, missingSlots: args.missingSlots, aiMetadata: { asrProvider: "mock", llmProvider, ttsProvider: ttsResult.provider, normalizedTranscript: args.input.transcript.replace(/\s+/g, " ").trim(), promptStyle: args.promptStyle, synthesizedVoice: ttsResult.voice } };
-    const decision: OrchestratorDecision = { ...decisionBase, ...(args.extractedSlots ? { extractedSlots: args.extractedSlots } : {}), ...(args.escalationSummary ? { escalationSummary: args.escalationSummary } : {}) };
+    const decision: OrchestratorDecision = {
+      action: args.action,
+      confidence: args.confidence,
+      reason: args.reason,
+      responseText: replyText,
+      missingSlots: args.missingSlots,
+      aiMetadata: { asrProvider: "mock", llmProvider, ttsProvider: ttsResult.provider, normalizedTranscript: args.input.transcript.replace(/\s+/g, " ").trim(), promptStyle: args.promptStyle, synthesizedVoice: ttsResult.voice },
+      ...(args.extractedSlots ? { extractedSlots: args.extractedSlots } : {}),
+      ...(args.slotConfidence ? { slotConfidence: args.slotConfidence } : {}),
+      ...(args.confirming ? { confirming: args.confirming } : {}),
+      ...(args.uncertainty ? { uncertainty: args.uncertainty } : {}),
+      ...(args.escalationSummary ? { escalationSummary: args.escalationSummary } : {})
+    };
     return { decision, slotState: args.slotState, missingSlots: args.missingSlots, allSlotsCollected: Boolean(args.allSlotsCollected) };
   }
 

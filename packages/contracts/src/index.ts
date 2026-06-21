@@ -157,10 +157,28 @@ export interface WorkflowDefinition {
   completionDescription: string;
 }
 
+/** A slot value that was understood with only medium confidence and is awaiting an explicit yes/no from the caller. */
+export interface PendingConfirmation {
+  slotKey: string;
+  value: string;
+  confidence: number;
+}
+
 export interface CallSlotState {
   required: string[];
   collected: Record<string, string>;
   missing: string[];
+  /**
+   * Uncertainty-aware belief tracking (all optional for backward compatibility).
+   * `confidence` is the per-slot belief in each collected value; `pendingConfirmation` holds a value
+   * we asked the caller to confirm; `attempts` counts how often each slot was asked/re-prompted;
+   * `confirmations`/`reprompts` are cumulative grounding-action counts for analytics.
+   */
+  confidence?: Record<string, number>;
+  pendingConfirmation?: PendingConfirmation;
+  attempts?: Record<string, number>;
+  confirmations?: number;
+  reprompts?: number;
 }
 
 export interface EscalationSummary {
@@ -222,6 +240,7 @@ export interface OrchestratorDecision {
   action:
     | "ask_consent"
     | "ask_clarification"
+    | "confirm_slot"
     | "respond"
     | "execute_task"
     | "escalate_to_human"
@@ -231,6 +250,12 @@ export interface OrchestratorDecision {
   responseText: string;
   extractedSlots?: Record<string, string>;
   missingSlots?: string[];
+  /** Per-slot belief confidence after this turn (uncertainty-aware dialogue management). */
+  slotConfidence?: Record<string, number>;
+  /** Present when `action === "confirm_slot"`: the value the caller is being asked to confirm. */
+  confirming?: PendingConfirmation;
+  /** Running grounding counters surfaced for live monitoring and analytics. */
+  uncertainty?: { confirmations: number; reprompts: number; pendingSlot?: string };
   escalationSummary?: EscalationSummary;
   aiMetadata?: AiTurnMetadata;
 }
@@ -242,6 +267,12 @@ export interface CallMetric {
   nluConfidence: number;
   workflowCompleted: boolean;
   escalated: boolean;
+  /** Per-slot belief confidence captured on this turn (uncertainty-aware dialogue management). */
+  slotConfidence?: Record<string, number>;
+  /** True when this turn asked the caller to explicitly confirm a medium-confidence value. */
+  confirmationTurn?: boolean;
+  /** True when this turn re-prompted because a value was understood with low confidence. */
+  repromptTurn?: boolean;
 }
 
 export interface CallEvent {
