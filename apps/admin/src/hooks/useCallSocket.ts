@@ -23,6 +23,8 @@ interface CallSocketState {
   lastAction: string | null;
   lastConfidence: number | null;
   confirming: ConfirmingSlot | null;
+  /** Live session language — switches mid-call when the agent detects the caller's language. */
+  sessionLanguage: string | null;
 }
 
 function speakText(text: string, lang: string) {
@@ -44,7 +46,7 @@ export function useCallSocket(options: { sessionId: string | null; role: "agent"
   const language = useAppSelector((state) => state.demo.selectedLanguage);
   const wsRef = useRef<WebSocket | null>(null);
   const counter = useRef(0);
-  const [state, setState] = useState<CallSocketState>({ connected: false, messages: [], needsConsent: false, done: false, lastAgentReply: "", lastAction: null, lastConfidence: null, confirming: null });
+  const [state, setState] = useState<CallSocketState>({ connected: false, messages: [], needsConsent: false, done: false, lastAgentReply: "", lastAction: null, lastConfidence: null, confirming: null, sessionLanguage: null });
 
   const push = useCallback((role: CallMessage["role"], text: string) => {
     counter.current += 1;
@@ -72,11 +74,17 @@ export function useCallSocket(options: { sessionId: string | null; role: "agent"
         needsConsent?: boolean;
         done?: boolean;
         decision?: { action?: string; confidence?: number; confirming?: ConfirmingSlot | null };
+        session?: { language?: string };
       };
       try {
         message = JSON.parse(event.data);
       } catch {
         return;
+      }
+      // The session payload (joined / agent_reply / session_update) carries the live language, which may switch mid-call.
+      if (message.session?.language) {
+        const nextLanguage = message.session.language;
+        setState((current) => (current.sessionLanguage === nextLanguage ? current : { ...current, sessionLanguage: nextLanguage }));
       }
       if (message.type === "agent_reply" && typeof message.reply === "string") {
         push("agent", message.reply);

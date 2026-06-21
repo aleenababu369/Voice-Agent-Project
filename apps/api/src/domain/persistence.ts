@@ -3,6 +3,8 @@ import type { CallMetric, CallSession, OrchestratorDecision } from "../../../../
 export interface TurnApplicationResult {
   decision: OrchestratorDecision;
   slotState: CallSession["slotState"];
+  /** When set, the caller switched language mid-call and the session adopts it for the rest of the call. */
+  language?: CallSession["language"];
 }
 
 export interface PersistenceMetricsSummary {

@@ -1,0 +1,7 @@
+{
+  "watch": ["apps/api/src", "packages/contracts/src", ".env"],
+  "ext": "ts,json",
+  "ignore": ["**/*.test.ts", "apps/admin/**", "dist/**"],
+  "exec": "node --env-file-if-exists=.env --experimental-strip-types apps/api/src/index.ts",
+  "delay": 300
+}

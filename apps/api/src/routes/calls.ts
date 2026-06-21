@@ -3,6 +3,7 @@ import { z } from "zod";
 import { agentProfileSchema, createContactSchema, createSessionSchema, consentSchema, deploymentSchema, dialCallSchema, inboundCallSchema, processTurnSchema, updateOperationStatusSchema } from "../schemas/call.schemas.ts";
 import { AgentProfileAccessError, AgentProfileValidationError } from "../services/agent-profile.service.ts";
 import { placeCall, processCallTurn } from "../services/call-runner.ts";
+import { ensureLlmReady } from "../services/ai/llm-runtime.ts";
 import { resolveAccountId } from "../plugins/auth.middleware.ts";
 import { randomUUID } from "node:crypto";
 
@@ -168,6 +169,9 @@ export function registerCallRoutes(app: FastifyInstance) {
     if (!app.services.agentProfiles.isDeployed(profile)) {
       return reply.code(409).send({ error: "Agent is not deployed. Deploy the agent before taking calls." });
     }
+
+    // Bring the local LLM up before the call begins (no-op when running on the rule engine).
+    await ensureLlmReady().catch(() => undefined);
 
     let phoneNumber = body.phoneNumber;
     let displayName = body.displayName;

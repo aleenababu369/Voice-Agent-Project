@@ -3,6 +3,7 @@ import type {
   CallSession,
   CallSlotState,
   EscalationSummary,
+  LanguageCode,
   OrchestratorDecision,
   PendingConfirmation,
   WorkflowDefinition
@@ -12,6 +13,7 @@ import { getLlmTurnAdapter } from "./ai/openai-compatible-adapter.ts";
 import { slotExtractor } from "./slot-extractor.ts";
 import { safetyPolicy } from "./safety-policy.ts";
 import { bandFor, clamp01, combineConfidence, getUncertaintyThresholds, interpretConfirmation } from "./dialogue/uncertainty.ts";
+import { confirmPhrase, detectLanguage, repromptPhrase, resolveLanguageCode, retryPhrase } from "./dialogue/language.ts";
 
 interface ProcessTurnInput {
   session: CallSession;
@@ -27,6 +29,8 @@ interface ProcessTurnResult {
   slotState: CallSlotState;
   missingSlots: string[];
   allSlotsCollected: boolean;
+  /** Set when the caller switched language mid-call; the session adopts this language for the rest of the call. */
+  language?: LanguageCode;
 }
 
 /** Mutable belief carried across the turn while the grounding policy runs. */
@@ -59,6 +63,11 @@ class CallOrchestrator {
       return this.buildDecision({ input, action: "ask_clarification", confidence, slotState: prior, missingSlots: prior.missing, responseText: "I want to make sure I understood you. Could you please repeat that more clearly?", reason: "Recognition confidence is below the safe threshold.", promptStyle: "clarification" });
     }
 
+    // IN-CALL LANGUAGE IDENTIFICATION — detect the caller's language (native script / romanized) up front.
+    const supportedLanguages = input.profile.languages;
+    const heuristic = detectLanguage(transcript, supportedLanguages);
+    let switchLanguage = heuristic && heuristic.language !== input.session.language ? heuristic.language : undefined;
+
     const requiredSlots = input.profile.slots.filter((slot) => slot.required).map((slot) => slot.key);
     const thresholds = getUncertaintyThresholds();
     const belief: BeliefState = {
@@ -79,7 +88,7 @@ class CallOrchestrator {
         belief.confidence[pending.slotKey] = grounded;
         const missingSlots = requiredSlots.filter((slot) => !collected[slot]);
         const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
-        return this.advanceAfterCollection({ input, confidence: grounded, slotState, missingSlots, justAccepted: [pending.slotKey], llmText: null });
+        return this.advanceAfterCollection({ input, confidence: grounded, slotState, missingSlots, justAccepted: [pending.slotKey], llmText: null, language: switchLanguage });
       }
       if (verdict === "no") {
         belief.reprompts += 1;
@@ -87,26 +96,30 @@ class CallOrchestrator {
         const collected = { ...prior.collected };
         const missingSlots = requiredSlots.filter((slot) => !collected[slot]);
         const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
-        const responseText = `No problem — let's try that again. ${this.buildNextPrompt(input.profile, pending.slotKey)}`;
-        return this.buildDecision({ input, action: "ask_clarification", confidence: input.nluConfidence, slotState, missingSlots, responseText, reason: `Caller rejected the proposed value for ${pending.slotKey}; re-prompting.`, promptStyle: "clarification", verbatim: true, slotConfidence: belief.confidence, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts } });
+        const responseText = retryPhrase(switchLanguage ?? input.session.language);
+        return this.buildDecision({ input, action: "ask_clarification", confidence: input.nluConfidence, slotState, missingSlots, responseText, reason: `Caller rejected the proposed value for ${pending.slotKey}; re-prompting.`, promptStyle: "clarification", verbatim: true, slotConfidence: belief.confidence, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts }, language: switchLanguage });
       }
       // verdict "unknown" -> the caller likely restated the value instead of saying yes/no; fall through and re-extract.
     }
 
-    // (2) EXTRACTION — rule + (optional) LLM, each value carrying its own confidence.
+    // (2) EXTRACTION — rule + (optional) LLM, each value carrying its own confidence. The LLM is told the
+    // caller's (already detected) language so it can reply in that language on the very same turn.
     const priorMissing = requiredSlots.filter((slot) => !prior.collected[slot]);
+    const effectiveLanguage = switchLanguage ?? input.session.language;
     const ruleScored = slotExtractor.extractProfileScored(input.profile, transcript);
     let llmSlots: Record<string, string> = {};
     let llmFieldConfidence: Record<string, number> = {};
     let llmOverall = 0.85;
     let llmReply: string | null = null;
     let llmEscalate = false;
+    let llmLanguageRaw: string | undefined;
     const adapter = getLlmTurnAdapter();
     if (adapter) {
       const turn = await adapter.runTurn({
         systemPrompt: input.profile.systemPrompt,
         welcomeMessage: input.profile.welcomeMessage,
-        language: input.session.language,
+        language: effectiveLanguage,
+        supportedLanguages,
         slots: input.profile.slots,
         collected: prior.collected,
         missing: priorMissing,
@@ -118,13 +131,19 @@ class CallOrchestrator {
         llmOverall = turn.confidence;
         llmReply = turn.reply;
         llmEscalate = turn.action === "escalate";
+        llmLanguageRaw = turn.language;
       }
     }
+
+    // Resolve the final language: native script always wins; otherwise prefer the LLM's judgment, then the keyword hint.
+    const llmLanguage = resolveLanguageCode(llmLanguageRaw, supportedLanguages);
+    const resolvedLanguage = heuristic?.source === "script" ? heuristic.language : (llmLanguage ?? heuristic?.language ?? input.session.language);
+    switchLanguage = resolvedLanguage !== input.session.language ? resolvedLanguage : undefined;
 
     if (llmEscalate) {
       const escalationSummary: EscalationSummary = { trigger: "manual_request", reason: "The caller asked to speak with a human representative.", lastTranscript: transcript, recommendedAction: "Transfer the call to an operator with the conversation summary." };
       const slotState = this.composeSlotState(requiredSlots, { ...prior.collected }, priorMissing, belief);
-      return this.buildDecision({ input, action: "escalate_to_human", confidence, slotState, missingSlots: priorMissing, responseText: llmReply ?? input.profile.escalationMessage, reason: escalationSummary.reason, promptStyle: "escalation", escalationSummary, llmText: llmReply });
+      return this.buildDecision({ input, action: "escalate_to_human", confidence, slotState, missingSlots: priorMissing, responseText: llmReply ?? input.profile.escalationMessage, reason: escalationSummary.reason, promptStyle: "escalation", escalationSummary, llmText: llmReply, language: switchLanguage });
     }
 
     // (3) GROUNDING POLICY — band every freshly extracted value: accept (high) / confirm (medium) / re-prompt (low).
@@ -175,9 +194,9 @@ class CallOrchestrator {
     if (confirmTarget) {
       belief.attempts[confirmTarget.slotKey] = (belief.attempts[confirmTarget.slotKey] ?? 0) + 1;
       const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief, confirmTarget);
-      const label = this.labelForSlot(input.profile, confirmTarget.slotKey);
-      const responseText = `Just to confirm, your ${label} is ${confirmTarget.value} — is that correct?`;
-      return this.buildDecision({ input, action: "confirm_slot", confidence: confirmTarget.confidence, slotState, missingSlots, responseText, reason: `Medium confidence on ${confirmTarget.slotKey}; asking the caller to confirm.`, promptStyle: "clarification", verbatim: true, extractedSlots: this.pick(collected, accepted), slotConfidence: belief.confidence, confirming: confirmTarget, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts, pendingSlot: confirmTarget.slotKey } });
+      // Grounding is deterministic and localized so the yes/no question always fires in the caller's language.
+      const responseText = confirmPhrase(switchLanguage ?? input.session.language, confirmTarget.value);
+      return this.buildDecision({ input, action: "confirm_slot", confidence: confirmTarget.confidence, slotState, missingSlots, responseText, reason: `Medium confidence on ${confirmTarget.slotKey}; asking the caller to confirm.`, promptStyle: "clarification", verbatim: true, extractedSlots: this.pick(collected, accepted), slotConfidence: belief.confidence, confirming: confirmTarget, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts, pendingSlot: confirmTarget.slotKey }, language: switchLanguage });
     }
 
     // (3b) Re-prompt a required slot we heard but couldn't trust.
@@ -185,14 +204,13 @@ class CallOrchestrator {
       belief.reprompts += 1;
       belief.attempts[repromptTarget] = (belief.attempts[repromptTarget] ?? 0) + 1;
       const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
-      const label = this.labelForSlot(input.profile, repromptTarget);
-      const responseText = `Sorry, I didn't catch your ${label} clearly. Could you say it once more?`;
-      return this.buildDecision({ input, action: "ask_clarification", confidence: input.nluConfidence, slotState, missingSlots, responseText, reason: `Low confidence on ${repromptTarget}; re-prompting.`, promptStyle: "clarification", verbatim: true, extractedSlots: this.pick(collected, accepted), slotConfidence: belief.confidence, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts } });
+      const responseText = repromptPhrase(switchLanguage ?? input.session.language);
+      return this.buildDecision({ input, action: "ask_clarification", confidence: input.nluConfidence, slotState, missingSlots, responseText, reason: `Low confidence on ${repromptTarget}; re-prompting.`, promptStyle: "clarification", verbatim: true, extractedSlots: this.pick(collected, accepted), slotConfidence: belief.confidence, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts }, language: switchLanguage });
     }
 
     // (3c) Nothing to confirm or re-prompt — proceed normally (complete or ask the next field).
     const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
-    return this.advanceAfterCollection({ input, confidence, slotState, missingSlots, justAccepted: accepted, llmText: llmReply });
+    return this.advanceAfterCollection({ input, confidence, slotState, missingSlots, justAccepted: accepted, llmText: llmReply, language: switchLanguage });
   }
 
   private acceptValue(collected: Record<string, string>, belief: BeliefState, accepted: string[], key: string, value: string, confidence: number) {
@@ -202,14 +220,14 @@ class CallOrchestrator {
   }
 
   /** Shared tail for "no grounding action needed": either complete the call or ask for the next missing field. */
-  private async advanceAfterCollection(args: { input: ProcessTurnInput; confidence: number; slotState: CallSlotState; missingSlots: string[]; justAccepted: string[]; llmText: string | null }): Promise<ProcessTurnResult> {
+  private async advanceAfterCollection(args: { input: ProcessTurnInput; confidence: number; slotState: CallSlotState; missingSlots: string[]; justAccepted: string[]; llmText: string | null; language?: LanguageCode }): Promise<ProcessTurnResult> {
     const extractedSlots = this.pick(args.slotState.collected, args.justAccepted);
     const uncertainty = { confirmations: args.slotState.confirmations ?? 0, reprompts: args.slotState.reprompts ?? 0 };
     const slotConfidence = args.slotState.confidence ?? {};
 
     if (args.missingSlots.length === 0) {
       const responseText = args.llmText ?? this.buildCompletionMessage(args.input.profile, args.slotState.collected);
-      return this.buildDecision({ input: args.input, action: "complete_call", confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "All required workflow slots are collected.", promptStyle: "completion", extractedSlots, allSlotsCollected: true, llmText: args.llmText, slotConfidence, uncertainty });
+      return this.buildDecision({ input: args.input, action: "complete_call", confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "All required workflow slots are collected.", promptStyle: "completion", extractedSlots, allSlotsCollected: true, llmText: args.llmText, slotConfidence, uncertainty, language: args.language });
     }
 
     // Implicit confirmation: read freshly accepted values back to the caller as part of the next question.
@@ -226,7 +244,7 @@ class CallOrchestrator {
       verbatim = readback.length > 0; // keep the readback intact; otherwise let the mock LLM phrase the prompt
     }
     const action: OrchestratorDecision["action"] = args.justAccepted.length > 0 ? "execute_task" : "respond";
-    return this.buildDecision({ input: args.input, action, confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "The workflow is still collecting required fields.", promptStyle: "workflow", extractedSlots, llmText: args.llmText, verbatim, slotConfidence, uncertainty });
+    return this.buildDecision({ input: args.input, action, confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "The workflow is still collecting required fields.", promptStyle: "workflow", extractedSlots, llmText: args.llmText, verbatim, slotConfidence, uncertainty, language: args.language });
   }
 
   private composeSlotState(required: string[], collected: Record<string, string>, missing: string[], belief: BeliefState, pendingConfirmation?: PendingConfirmation): CallSlotState {
@@ -270,11 +288,12 @@ class CallOrchestrator {
     slotConfidence?: Record<string, number>;
     confirming?: PendingConfirmation;
     uncertainty?: { confirmations: number; reprompts: number; pendingSlot?: string };
+    language?: LanguageCode;
   }): Promise<ProcessTurnResult> {
     let replyText: string;
     let llmProvider: "mock" | "openai-compatible";
     if (args.llmText) {
-      // The real LLM already phrased a natural reply.
+      // The real LLM already phrased a natural reply (in the caller's language).
       replyText = args.llmText;
       llmProvider = "openai-compatible";
     } else if (args.verbatim) {
@@ -287,7 +306,8 @@ class CallOrchestrator {
       replyText = llmResult.text;
       llmProvider = llmResult.provider;
     }
-    const ttsResult = await aiAdapters.tts.synthesize({ text: replyText, language: args.input.session.language, domain: args.input.session.domain });
+    const replyLanguage = args.language ?? args.input.session.language;
+    const ttsResult = await aiAdapters.tts.synthesize({ text: replyText, language: replyLanguage, domain: args.input.session.domain });
     const decision: OrchestratorDecision = {
       action: args.action,
       confidence: args.confidence,
@@ -301,7 +321,7 @@ class CallOrchestrator {
       ...(args.uncertainty ? { uncertainty: args.uncertainty } : {}),
       ...(args.escalationSummary ? { escalationSummary: args.escalationSummary } : {})
     };
-    return { decision, slotState: args.slotState, missingSlots: args.missingSlots, allSlotsCollected: Boolean(args.allSlotsCollected) };
+    return { decision, slotState: args.slotState, missingSlots: args.missingSlots, allSlotsCollected: Boolean(args.allSlotsCollected), ...(args.language ? { language: args.language } : {}) };
   }
 
   private buildNextPrompt(profile: AgentProfile, nextSlot?: string) {

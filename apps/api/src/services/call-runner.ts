@@ -1,6 +1,7 @@
 import type { AgentProfile, CallSession, Operation, OrchestratorDecision, WorkflowDefinition } from "../../../../packages/contracts/src/index.ts";
 import { agentProfileService } from "./agent-profile.service.ts";
 import { callOrchestrator } from "./call-orchestrator.ts";
+import { ensureLlmReady } from "./ai/llm-runtime.ts";
 import { operationLabel, operationTypeForWorkflow, outcomeTypeForOperation } from "./operations.helper.ts";
 import { persistenceService } from "./persistence.service.ts";
 
@@ -120,6 +121,9 @@ export async function placeCall(input: {
     error.code = "AGENT_NOT_DEPLOYED";
     throw error;
   }
+
+  // Make sure the local LLM is up before the conversation starts (no-op in rule-engine mode).
+  await ensureLlmReady().catch(() => undefined);
 
   const phoneNumber = input.prospect?.phoneNumber ?? input.phoneNumber ?? "+910000000000";
   const displayName = input.prospect?.name ?? input.displayName;

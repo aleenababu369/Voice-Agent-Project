@@ -40,6 +40,8 @@ export interface LlmTurnRequest {
   systemPrompt: string;
   welcomeMessage: string;
   language: CallSession["language"];
+  /** Languages the agent can serve; the model may switch its reply to whichever of these the caller speaks. */
+  supportedLanguages?: CallSession["language"][];
   slots: Array<{ key: string; label: string; prompt: string; required: boolean }>;
   collected: Record<string, string>;
   missing: string[];
@@ -52,6 +54,8 @@ export interface LlmTurnResult {
   extractedFields: Record<string, string>;
   /** Per-field 0..1 certainty the model has in each extracted value (uncertainty-aware dialogue management). */
   fieldConfidence?: Record<string, number>;
+  /** The language the model detected the caller speaking (free-form label or code; resolved against supported langs). */
+  language?: string;
   action: "ask_clarification" | "collect" | "complete" | "escalate";
   confidence: number;
 }

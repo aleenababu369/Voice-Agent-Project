@@ -282,6 +282,7 @@ export interface CallEvent {
     | "consent_updated"
     | "turn_processed"
     | "escalation_triggered"
+    | "language_switched"
     | "workflow_completed"
     | "follow_up_updated"
     | "outcome_updated"

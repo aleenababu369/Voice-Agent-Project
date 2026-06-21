@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Loader2, Mic, MicOff, PhoneOff, ShieldCheck, Volume2, Waypoints, Zap } from "lucide-react";
+import { Languages, Loader2, Mic, MicOff, PhoneOff, ShieldCheck, Volume2, Waypoints, Zap } from "lucide-react";
 import { useAppSelector } from "../app/hooks";
 import { useCallSocket } from "../hooks/useCallSocket";
 import { Card, CardContent } from "@/components/ui/card";
@@ -32,6 +32,14 @@ type Phase = "connecting" | "ringing" | "agent" | "listening" | "thinking" | "en
 const BARGE_MIN_WORDS = 2;
 // A reported recognition confidence below this is treated as ambient noise rather than the caller speaking.
 const NOISE_CONFIDENCE_FLOOR = 0.3;
+
+const LANGUAGE_LABELS: Record<string, string> = {
+  "en-IN": "English",
+  "hi-IN": "Hindi",
+  "kn-IN": "Kannada",
+  "ta-IN": "Tamil",
+  "ml-IN": "Malayalam"
+};
 // Disfluencies/filler the recognizer emits for throat-clears, hesitation, and background murmur.
 const FILLER_PATTERN = /\b(uh+|um+|hmm+|mm+|mhm+|er+|err+|ah+|eh+|huh)\b/gi;
 
@@ -75,9 +83,12 @@ export function SoftphonePage() {
   const [params] = useSearchParams();
   const sessionId = params.get("session");
   const auto = params.get("auto") === "1"; // dialed inbound call -> the agent answers automatically
-  const language = useAppSelector((state) => state.demo.selectedLanguage);
+  const demoLanguage = useAppSelector((state) => state.demo.selectedLanguage);
   // The page owns text-to-speech so it knows exactly when the agent is talking (for echo filtering + barge-in).
   const call = useCallSocket({ sessionId, role: "softphone", speak: false });
+  // Follow the live session language: when the agent detects the caller switched languages, the recognizer
+  // and text-to-speech follow suit so the rest of the call is heard and spoken in that language.
+  const language = call.sessionLanguage ?? demoLanguage;
 
   const [phase, setPhase] = useState<Phase>("connecting");
   const [answered, setAnswered] = useState(false);
@@ -242,6 +253,8 @@ export function SoftphonePage() {
       }
     };
     recognitionRef.current = recognition;
+    // If the recognizer was rebuilt mid-call (e.g. the call switched language), resume listening on the new one.
+    if (answeredRef.current && !mutedRef.current && !doneRef.current) window.setTimeout(ensureListening, 200);
     return () => { try { recognition.abort(); } catch { /* ignore */ } };
   }, [language, ensureListening]);
 
@@ -315,7 +328,10 @@ export function SoftphonePage() {
           <CardContent className="space-y-5 p-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2"><div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Waypoints className="h-5 w-5" /></div><span className="font-display text-lg font-semibold">Softphone</span></div>
-              <Badge variant={call.connected ? "success" : "muted"}>{call.connected ? "connected" : "connecting…"}</Badge>
+              <div className="flex items-center gap-2">
+                {call.sessionLanguage && call.sessionLanguage !== demoLanguage ? <Badge variant="secondary"><Languages className="h-3 w-3" /> {LANGUAGE_LABELS[language] ?? language}</Badge> : null}
+                <Badge variant={call.connected ? "success" : "muted"}>{call.connected ? "connected" : "connecting…"}</Badge>
+              </div>
             </div>
 
             <div className="flex items-center justify-center gap-3 rounded-xl border border-border bg-secondary/30 py-4">

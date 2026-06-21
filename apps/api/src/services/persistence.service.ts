@@ -144,9 +144,13 @@ class PersistenceService {
       escalate_to_human: "escalated",
       complete_call: "completed"
     };
-    const base: CallSession = { ...session, status: statusMap[result.decision.action], slotState: result.slotState, lastTranscript: transcript, turnCount: session.turnCount + 1, updatedAt: new Date().toISOString() };
+    const languageChanged = Boolean(result.language && result.language !== session.language);
+    const base: CallSession = { ...session, status: statusMap[result.decision.action], slotState: result.slotState, ...(languageChanged ? { language: result.language! } : {}), lastTranscript: transcript, turnCount: session.turnCount + 1, updatedAt: new Date().toISOString() };
     const updated: CallSession = result.decision.escalationSummary ? { ...base, escalationSummary: result.decision.escalationSummary } : (() => { const { escalationSummary: _ignored, ...rest } = base; return rest; })();
     await this.persistSession(updated);
+    if (languageChanged) {
+      await this.recordEvent({ sessionId: id, type: "language_switched", payload: { tenantId: updated.tenantId, from: session.language, to: updated.language }, createdAt: updated.updatedAt });
+    }
     await this.recordEvent({
       sessionId: id,
       type: result.decision.action === "complete_call" ? "workflow_completed" : "turn_processed",

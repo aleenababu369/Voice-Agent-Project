@@ -1,4 +1,5 @@
 import type { LlmTurnAdapter, LlmTurnRequest, LlmTurnResult } from "./types.ts";
+import { LANGUAGE_NAMES } from "../dialogue/language.ts";
 
 interface AdapterConfig {
   baseUrl: string;
@@ -11,6 +12,9 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
   const slotLines = request.slots
     .map((slot) => `- ${slot.key} (${slot.label})${slot.required ? " [required]" : ""}: ${slot.prompt}`)
     .join("\n");
+  const supported = request.supportedLanguages?.length ? request.supportedLanguages : [request.language];
+  const supportedList = supported.map((code) => `${LANGUAGE_NAMES[code]} (${code})`).join(", ");
+  const currentName = LANGUAGE_NAMES[request.language];
   return [
     request.systemPrompt,
     "",
@@ -22,10 +26,12 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
     `Still missing: ${JSON.stringify(request.missing)}`,
     "",
     "Respond with ONLY a JSON object, no prose, in this exact shape:",
-    '{"reply": string, "extractedFields": {"<field_key>": "<value>"}, "fieldConfidence": {"<field_key>": number}, "action": "collect" | "complete" | "ask_clarification" | "escalate", "confidence": number}',
+    '{"reply": string, "extractedFields": {"<field_key>": "<value>"}, "fieldConfidence": {"<field_key>": number}, "language": string, "action": "collect" | "complete" | "ask_clarification" | "escalate", "confidence": number}',
     "Rules:",
     "- Put a field in extractedFields ONLY if the caller actually stated it in their latest message. Use the exact field keys above.",
     "- For every field you put in extractedFields, add the SAME key to fieldConfidence with your 0..1 certainty you heard that specific value correctly (lower it when the value was unclear, partial, spelled oddly, or ambiguous).",
+    `- The caller may speak any of these supported languages: ${supportedList}. Detect the language of their LATEST message.`,
+    `- If that language is one of the supported languages, WRITE the reply IN THAT LANGUAGE and set "language" to its code (e.g. ml-IN). Otherwise reply in ${currentName} and set "language" to "${request.language}".`,
     "- action = \"complete\" only when every required field is collected. Otherwise \"collect\".",
     "- action = \"escalate\" if the caller asks for a human or there is a safety concern.",
     "- confidence is your 0..1 certainty in understanding the caller overall.",
@@ -103,6 +109,7 @@ class OpenAiCompatibleLlmAdapter implements LlmTurnAdapter {
         reply: parsed.reply,
         extractedFields: cleaned,
         fieldConfidence,
+        ...(typeof parsed.language === "string" && parsed.language.trim() ? { language: parsed.language.trim() } : {}),
         action,
         confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.85
       };
