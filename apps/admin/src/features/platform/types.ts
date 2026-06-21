@@ -163,6 +163,7 @@ export interface AgentProfileDto {
   slots: AgentProfileSlot[];
   status?: AgentDeploymentStatusDto;
   deployedAt?: string;
+  phoneNumber?: string;
   createdAt: string;
   updatedAt: string;
 }

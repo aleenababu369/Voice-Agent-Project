@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { agentProfileSchema, createContactSchema, createSessionSchema, consentSchema, deploymentSchema, inboundCallSchema, processTurnSchema, updateOperationStatusSchema } from "../schemas/call.schemas.ts";
+import { agentProfileSchema, createContactSchema, createSessionSchema, consentSchema, deploymentSchema, dialCallSchema, inboundCallSchema, processTurnSchema, updateOperationStatusSchema } from "../schemas/call.schemas.ts";
 import { AgentProfileAccessError, AgentProfileValidationError } from "../services/agent-profile.service.ts";
 import { placeCall, processCallTurn } from "../services/call-runner.ts";
 import { resolveAccountId } from "../plugins/auth.middleware.ts";
@@ -232,6 +232,38 @@ export function registerCallRoutes(app: FastifyInstance) {
       ...(body.language ? { language: body.language } : {})
     });
     return reply.code(201).send({ session, profile, prospect });
+  });
+
+  // Public: look up which agent answers a dialed number (for the caller's dialer UI).
+  app.get("/v1/public/agents/by-number/:number", async (request, reply) => {
+    const { number } = request.params as { number: string };
+    const profile = app.services.agentProfiles.findByPhoneNumber(decodeURIComponent(number));
+    if (!profile) return reply.code(404).send({ error: "No agent found at that number." });
+    const account = app.services.agentProfiles.getAccount(profile.tenantId);
+    return { agent: { id: profile.id, name: profile.name, phoneNumber: profile.phoneNumber ?? null, accountName: account.name, useCase: profile.domain, deployed: app.services.agentProfiles.isDeployed(profile) } };
+  });
+
+  // Public: a caller dials an agent's number. The matching agent answers automatically and the session opens.
+  app.post("/v1/calls/dial", async (request, reply) => {
+    const body = dialCallSchema.parse(request.body);
+    const profile = app.services.agentProfiles.findByPhoneNumber(body.agentNumber);
+    if (!profile) return reply.code(404).send({ error: "No agent is reachable at that number." });
+    if (!app.services.agentProfiles.isDeployed(profile)) return reply.code(409).send({ error: "This agent is not available for calls right now." });
+    const accountId = profile.tenantId;
+    const existing = (await app.services.persistence.listProspects(accountId)).find((prospect) => prospect.phoneNumber === body.callerPhone);
+    const prospect = existing ?? await app.services.persistence.createProspect(accountId, {
+      name: body.callerName ?? "Caller",
+      phoneNumber: body.callerPhone,
+      status: "in_progress"
+    });
+    const { session } = await placeCall({
+      accountId,
+      profileId: profile.id,
+      prospect: { id: prospect.id, phoneNumber: prospect.phoneNumber, name: prospect.name },
+      direction: "inbound",
+      ...(body.language ? { language: body.language } : {})
+    });
+    return reply.code(201).send({ session, agent: { id: profile.id, name: profile.name, phoneNumber: profile.phoneNumber ?? null } });
   });
 
   app.get("/v1/calls/session/:sessionId", async (request, reply) => {

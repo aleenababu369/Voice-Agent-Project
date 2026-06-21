@@ -1,14 +1,12 @@
 import { useState } from "react";
-import { Copy, ExternalLink, PhoneCall, PhoneOutgoing, Send, ShieldCheck } from "lucide-react";
+import { Copy, ExternalLink, PhoneCall, PhoneOutgoing, Send } from "lucide-react";
 import { useAppSelector } from "../app/hooks";
 import { createApiClient } from "../features/demo/demoApi";
 import { useCallSocket } from "../hooks/useCallSocket";
-import type { CallDirectionDto } from "../features/platform/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Eyebrow, Field, SectionHeader, SimpleSelect } from "../components/common";
 import { cn } from "@/lib/utils";
 
@@ -20,15 +18,14 @@ export function CallConsolePage() {
   const deployed = profiles.filter((profile) => profile.status !== "draft");
 
   const [agentId, setAgentId] = useState("");
-  const [direction, setDirection] = useState<CallDirectionDto>("outbound");
   const [prospectId, setProspectId] = useState("");
-  const [phone, setPhone] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
 
   const call = useCallSocket({ sessionId, role: "agent", speak: false });
+  const selectedAgent = deployed.find((profile) => profile.id === agentId);
   const softphoneLink = sessionId ? `${window.location.origin}/softphone?session=${sessionId}` : "";
 
   async function placeCall() {
@@ -36,8 +33,8 @@ export function CallConsolePage() {
     setPlacing(true);
     try {
       const api = createApiClient(baseUrl, token);
-      const body: Record<string, unknown> = { profileId: agentId, direction, phoneNumber: phone.trim() || "+910000000000" };
-      if (direction === "outbound" && prospectId) body.prospectId = prospectId;
+      const body: Record<string, unknown> = { profileId: agentId, direction: "outbound", phoneNumber: "+910000000000" };
+      if (prospectId) body.prospectId = prospectId;
       const response = await api.post<{ session: { id: string } }>("/v1/calls/session", body);
       setSessionId(response.data.session.id);
     } catch (err) {
@@ -49,27 +46,29 @@ export function CallConsolePage() {
 
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Call console" title="Place a live call" subtitle="Place a call, then answer it in a softphone tab. The agent talks, you respond — turns relay in real time." />
+      <SectionHeader eyebrow="Call console" title="Place an outbound call" subtitle="Outbound = the agent dials a prospect; you answer in a softphone tab. For inbound, customers dial the agent's number on the dialer." />
 
       <div className="grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
         <Card>
           <CardContent className="space-y-4 p-5">
             <Field label="Agent"><SimpleSelect value={agentId} onValueChange={setAgentId} placeholder="Select a deployed agent" options={deployed.map((p) => ({ value: p.id, label: p.name }))} /></Field>
-            <Field label="Direction">
-              <Tabs value={direction} onValueChange={(v) => setDirection(v as CallDirectionDto)}>
-                <TabsList className="w-full">
-                  <TabsTrigger value="inbound" className="flex-1"><PhoneCall className="h-4 w-4" /> Inbound</TabsTrigger>
-                  <TabsTrigger value="outbound" className="flex-1"><PhoneOutgoing className="h-4 w-4" /> Outbound</TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </Field>
-            {direction === "outbound" ? (
-              <Field label="Prospect"><SimpleSelect value={prospectId} onValueChange={setProspectId} placeholder="Pick a prospect (optional)" options={prospects.map((p) => ({ value: p.id, label: `${p.name} · ${p.phoneNumber}` }))} /></Field>
-            ) : (
-              <Field label="Caller phone (optional)"><Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91…" /></Field>
-            )}
+
+            {selectedAgent?.phoneNumber ? (
+              <div className="space-y-2 rounded-lg border border-border bg-secondary/40 p-3">
+                <Eyebrow>Inbound number</Eyebrow>
+                <p className="text-xs text-muted-foreground">Customers dial this number to reach this agent:</p>
+                <div className="flex items-center gap-2">
+                  <Input readOnly value={selectedAgent.phoneNumber} className="font-mono text-sm" />
+                  <Button size="icon" variant="outline" onClick={() => navigator.clipboard?.writeText(selectedAgent.phoneNumber ?? "")}><Copy className="h-4 w-4" /></Button>
+                </div>
+                <Button size="sm" variant="outline" className="w-full" onClick={() => window.open(`/call?number=${encodeURIComponent(selectedAgent.phoneNumber ?? "")}`, "_blank")}><PhoneCall className="h-4 w-4" /> Open dialer (test inbound)</Button>
+              </div>
+            ) : null}
+
+            <Field label="Prospect to call"><SimpleSelect value={prospectId} onValueChange={setProspectId} placeholder="Pick a prospect (optional)" options={prospects.map((p) => ({ value: p.id, label: `${p.name} · ${p.phoneNumber}` }))} /></Field>
+
             {error ? <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
-            <Button className="w-full" disabled={!agentId || placing} onClick={() => void placeCall()}><PhoneCall className="h-4 w-4" /> {placing ? "Placing…" : "Place call"}</Button>
+            <Button className="w-full" disabled={!agentId || placing} onClick={() => void placeCall()}><PhoneOutgoing className="h-4 w-4" /> {placing ? "Placing…" : "Place outbound call"}</Button>
 
             {sessionId ? (
               <div className="space-y-2 rounded-lg border border-border bg-secondary/50 p-3">
@@ -101,12 +100,9 @@ export function CallConsolePage() {
               ))}
             </div>
             {sessionId && !call.done ? (
-              <div className="space-y-2">
-                {call.needsConsent ? <Button size="sm" variant="outline" onClick={call.grantConsent}><ShieldCheck className="h-4 w-4" /> Grant consent (as caller)</Button> : null}
-                <div className="flex gap-2">
-                  <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Reply as the caller (single-tab test)…" onKeyDown={(e) => { if (e.key === "Enter" && input.trim()) { call.sendUtterance(input.trim()); setInput(""); } }} />
-                  <Button onClick={() => { if (input.trim()) { call.sendUtterance(input.trim()); setInput(""); } }}><Send className="h-4 w-4" /></Button>
-                </div>
+              <div className="flex gap-2">
+                <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Reply as the caller (single-tab test)…" onKeyDown={(e) => { if (e.key === "Enter" && input.trim()) { call.sendUtterance(input.trim()); setInput(""); } }} />
+                <Button onClick={() => { if (input.trim()) { call.sendUtterance(input.trim()); setInput(""); } }}><Send className="h-4 w-4" /></Button>
               </div>
             ) : null}
           </CardContent>

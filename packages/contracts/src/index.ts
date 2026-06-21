@@ -77,6 +77,8 @@ export interface AgentProfile {
   /** Optional for backward compatibility: `undefined` is treated as "deployed" for seeded profiles. */
   status?: AgentDeploymentStatus;
   deployedAt?: string;
+  /** Unique inbound phone number customers dial to reach this agent. */
+  phoneNumber?: string;
   createdAt: string;
   updatedAt: string;
 }

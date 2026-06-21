@@ -36,6 +36,7 @@ export function AgentsListPage() {
                     <Badge variant={profile.status === "draft" ? "muted" : "success"}>{profile.status === "draft" ? "draft" : "live"}</Badge>
                   </div>
                   <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">{profile.description}</p>
+                  {profile.phoneNumber ? <p className="mt-2 font-mono text-xs text-muted-foreground">☎ {profile.phoneNumber}</p> : null}
                   <p className="mt-3 text-xs text-muted-foreground">{profile.slots.filter((slot) => slot.required).length} required fields · {profile.languages.join(", ")}</p>
                 </CardContent>
               </Card>

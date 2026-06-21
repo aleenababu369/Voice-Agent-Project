@@ -8,7 +8,7 @@ declare module "fastify" {
 }
 
 // Routes that never require authentication.
-const PUBLIC_PREFIXES = ["/health", "/v1/auth", "/v1/capabilities", "/v1/demo", "/v1/calls/ws", "/v1/calls/inbound"];
+const PUBLIC_PREFIXES = ["/health", "/v1/auth", "/v1/capabilities", "/v1/demo", "/v1/calls/ws", "/v1/calls/inbound", "/v1/calls/dial", "/v1/public"];
 
 function isPublic(url: string) {
   const path = url.split("?")[0] ?? url;

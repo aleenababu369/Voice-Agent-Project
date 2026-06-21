@@ -180,9 +180,14 @@ function accountActor(accountId: string): { id: string; name: string; role: Admi
   return { id: accountId, name: account?.name ?? accountId, role: "admin" };
 }
 
+function normalizePhone(value: string): string {
+  return value.replace(/[^\d+]/g, "");
+}
+
 class AgentProfileService {
   private readonly profiles = new Map<string, AgentProfile>();
   private readonly versions = new Map<string, AgentProfileVersion[]>();
+  private phoneSeq = 70000001;
 
   constructor() {
     const seeded = [
@@ -191,9 +196,25 @@ class AgentProfileService {
       buildProfileFromTemplate(agentProfileTemplates[1]!, "northstar-frontdesk", "Northstar Reception Desk")
     ];
     for (const profile of seeded) {
+      profile.phoneNumber = this.allocatePhoneNumber();
       this.profiles.set(profile.id, profile);
       this.versions.set(profile.id, [this.createVersionSnapshot(profile, SYSTEM_ACTOR, "Initial demo seed")]);
     }
+  }
+
+  /** Generate the next unique inbound phone number (Indian mobile-style) for an agent. */
+  private allocatePhoneNumber(): string {
+    let number: string;
+    do {
+      number = `+9190${this.phoneSeq++}`;
+    } while ([...this.profiles.values()].some((profile) => profile.phoneNumber === number));
+    return number;
+  }
+
+  /** Resolve the deployed agent a caller dialed, by its phone number (ignoring spaces/formatting). */
+  findByPhoneNumber(number: string) {
+    const target = normalizePhone(number);
+    return [...this.profiles.values()].find((profile) => profile.phoneNumber && normalizePhone(profile.phoneNumber) === target) ?? null;
   }
 
   getDefaultTenantId() {
@@ -218,6 +239,7 @@ class AgentProfileService {
   provisionStarterAgent(accountId: string, useCase: Domain, accountName?: string) {
     const template = templateForUseCase(useCase);
     const profile = buildProfileFromTemplate(template, accountId, `${accountName ?? this.getAccount(accountId).name} Agent`, "draft");
+    profile.phoneNumber = this.allocatePhoneNumber();
     this.profiles.set(profile.id, profile);
     this.versions.set(profile.id, [this.createVersionSnapshot(profile, accountActor(accountId), "Starter agent provisioned")]);
     return profile;
@@ -294,7 +316,8 @@ class AgentProfileService {
     const id = input.id && input.id.trim().length > 0
       ? input.id
       : `${accountId.replace(/[^a-z0-9]+/g, "-")}-${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
-    const profile: AgentProfile = { ...normalizedInput, id, createdAt: timestamp, updatedAt: timestamp };
+    const existing = this.profiles.get(id);
+    const profile: AgentProfile = { ...normalizedInput, id, phoneNumber: existing?.phoneNumber ?? this.allocatePhoneNumber(), createdAt: timestamp, updatedAt: timestamp };
     this.profiles.set(profile.id, profile);
     this.appendVersion(profile, accountActor(accountId), "Agent created");
     return profile;
@@ -304,7 +327,7 @@ class AgentProfileService {
     const existing = this.get(id, accountId);
     const normalizedInput = { ...input, tenantId: existing.tenantId, slots: normalizeProfileSlots(input.slots) };
     this.assertValid(normalizedInput);
-    const profile: AgentProfile = { ...existing, ...normalizedInput, id, tenantId: existing.tenantId, createdAt: existing.createdAt, updatedAt: now() };
+    const profile: AgentProfile = { ...existing, ...normalizedInput, id, tenantId: existing.tenantId, phoneNumber: existing.phoneNumber ?? this.allocatePhoneNumber(), createdAt: existing.createdAt, updatedAt: now() };
     this.profiles.set(id, profile);
     this.appendVersion(profile, accountActor(accountId), "Agent updated");
     return profile;
@@ -356,10 +379,22 @@ class AgentProfileService {
       }
       for (const [profileId, list] of grouped) this.versions.set(profileId, list.sort((a, b) => b.version - a.version));
     }
+    // Advance the phone counter past any persisted numbers so we never reissue one.
+    for (const profile of this.profiles.values()) {
+      if (profile.phoneNumber) {
+        const seq = Number(normalizePhone(profile.phoneNumber).replace(/^\+9190/, ""));
+        if (Number.isFinite(seq) && seq >= this.phoneSeq) this.phoneSeq = seq + 1;
+      }
+    }
     if (profilesCollection) {
       for (const profile of this.profiles.values()) {
+        if (!profile.phoneNumber) profile.phoneNumber = this.allocatePhoneNumber();
         this.persistProfile(profile);
         for (const version of this.versions.get(profile.id) ?? []) this.persistVersion(version);
+      }
+    } else {
+      for (const profile of this.profiles.values()) {
+        if (!profile.phoneNumber) profile.phoneNumber = this.allocatePhoneNumber();
       }
     }
   }

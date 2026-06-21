@@ -34,6 +34,13 @@ export const inboundCallSchema = z.object({
   language: z.enum(["en-IN", "hi-IN", "kn-IN", "ta-IN", "ml-IN"]).optional()
 });
 
+export const dialCallSchema = z.object({
+  agentNumber: z.string().min(3),
+  callerPhone: z.string().min(3),
+  callerName: z.string().min(1).optional(),
+  language: z.enum(["en-IN", "hi-IN", "kn-IN", "ta-IN", "ml-IN"]).optional()
+});
+
 export const registerTenantSchema = z.object({
   name: z.string().min(2),
   description: z.string().trim().default(""),

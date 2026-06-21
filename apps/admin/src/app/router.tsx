@@ -17,6 +17,7 @@ import { AnalyticsPage } from "../pages/AnalyticsPage";
 import { CallConsolePage } from "../pages/CallConsolePage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { SoftphonePage } from "../pages/SoftphonePage";
+import { DialerPage } from "../pages/DialerPage";
 
 function Splash() {
   return (
@@ -50,6 +51,7 @@ export const router = createBrowserRouter([
   { path: "/login", element: <PublicOnly><LoginPage /></PublicOnly> },
   { path: "/signup", element: <PublicOnly><SignupPage /></PublicOnly> },
   { path: "/onboarding", element: <OnboardingGate /> },
+  { path: "/call", element: <DialerPage /> },
   { path: "/softphone", element: <SoftphonePage /> },
   {
     path: "/",
