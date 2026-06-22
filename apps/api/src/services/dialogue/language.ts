@@ -128,6 +128,47 @@ const CODE_ALIASES: Array<{ code: LanguageCode; names: string[] }> = [
   { code: "ml-IN", names: ["ml", "malayalam"] }
 ];
 
+const FULL_LANGUAGE_NAMES: Array<{ code: LanguageCode; name: string }> = [
+  { code: "en-IN", name: "english" },
+  { code: "hi-IN", name: "hindi" },
+  { code: "kn-IN", name: "kannada" },
+  { code: "ta-IN", name: "tamil" },
+  { code: "ml-IN", name: "malayalam" }
+];
+
+/** Detect an explicit caller request like "switch to English" / "speak in Hindi" / "talk in Tamil". */
+export function detectLanguageCommand(transcript: string, supported: LanguageCode[]): LanguageCode | null {
+  const lower = transcript.toLowerCase();
+  const hasVerb = /\b(switch|change|talk|speak|reply|respond|continue|say it|do it)\b/.test(lower) || /\bin\s+(english|hindi|kannada|tamil|malayalam)\b/.test(lower);
+  if (!hasVerb) return null;
+  const allow = new Set(supported);
+  for (const entry of FULL_LANGUAGE_NAMES) {
+    if (allow.has(entry.code) && new RegExp(`\\b${entry.name}\\b`).test(lower)) return entry.code;
+  }
+  return null;
+}
+
+/**
+ * Resolve the language for this turn conservatively. English is the safe default; we only switch AWAY from English
+ * when there is real non-English evidence (native script or romanized keywords), so an over-eager LLM guess on plain
+ * English text (e.g. "I am Arvind") never hijacks the call. An explicit command or native script always wins.
+ */
+export function resolveCallLanguage(opts: {
+  current: LanguageCode;
+  supported: LanguageCode[];
+  transcript: string;
+  heuristic: LanguageDetection | null;
+  commanded: LanguageCode | null;
+  llm?: LanguageCode | undefined;
+}): LanguageCode {
+  if (opts.commanded) return opts.commanded;
+  if (opts.heuristic?.source === "script") return opts.heuristic.language;
+  const looksNonEnglish = /[-￿]/.test(opts.transcript) || opts.heuristic !== null;
+  if (looksNonEnglish) return opts.heuristic?.language ?? opts.llm ?? opts.current;
+  // Plain ASCII English with no non-English markers: default to English (reverting if we had switched).
+  return opts.supported.includes("en-IN") ? "en-IN" : opts.current;
+}
+
 /** Map a free-form language label the LLM might return ("Malayalam", "ml", "ml-IN") to a supported LanguageCode. */
 export function resolveLanguageCode(raw: string | undefined, supported: LanguageCode[]): LanguageCode | undefined {
   if (!raw) return undefined;

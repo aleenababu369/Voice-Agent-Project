@@ -64,7 +64,7 @@ export function ProspectDetailPage() {
           <div className="mt-3 grid gap-3">
             {operations.length === 0 ? <EmptyState>No operations yet — complete a call with this prospect.</EmptyState> : operations.map((operation) => (
               <div key={operation.id} className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-2"><Badge>{formatLabel(operation.type)}</Badge><strong className="font-mono text-sm">{operation.referenceId}</strong>{operation.scheduledFor ? <span className="text-sm text-muted-foreground">· {operation.scheduledFor}</span> : null}</div>
+                <div className="flex items-center gap-2"><Badge>{formatLabel(operation.type)}</Badge><Link to={`/operations/${operation.id}`} className="font-mono text-sm font-semibold hover:underline">{operation.referenceId}</Link>{operation.scheduledFor ? <span className="text-sm text-muted-foreground">· {operation.scheduledFor}</span> : null}</div>
                 <div className="w-[170px]"><SimpleSelect value={operation.status} onValueChange={(v) => void dispatch(updateOperation({ operationId: operation.id, status: v as OperationStatusDto }))} options={STATUSES.map((status) => ({ value: status, label: formatLabel(status) }))} /></div>
               </div>
             ))}

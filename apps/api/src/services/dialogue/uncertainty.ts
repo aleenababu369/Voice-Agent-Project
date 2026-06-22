@@ -40,7 +40,9 @@ function numEnv(name: string, fallback: number): number {
 }
 
 export function getUncertaintyThresholds(): UncertaintyThresholds {
-  const accept = clamp01(numEnv("UADM_ACCEPT_THRESHOLD", 0.7));
+  // Conservative defaults: the agent accepts most clearly-stated values and only asks the caller to confirm
+  // when confidence is genuinely low (or when the LLM itself flags it). This keeps the dialogue natural.
+  const accept = clamp01(numEnv("UADM_ACCEPT_THRESHOLD", 0.6));
   const confirm = clamp01(numEnv("UADM_CONFIRM_THRESHOLD", 0.4));
   const maxAttempts = Math.max(1, Math.round(numEnv("UADM_MAX_ATTEMPTS", 3)));
   // Guard against an inverted configuration (confirm must not exceed accept).
@@ -72,7 +74,12 @@ export function interpretConfirmation(transcript: string): ConfirmationVerdict {
   if (!text) return "unknown";
   const saysYes = YES_PATTERN.test(text);
   const saysNo = NO_PATTERN.test(text);
-  if (saysNo && !saysYes) return "no";
+  if (saysNo && !saysYes) {
+    // A bare "no" is a rejection; a longer "no, it's actually <X>" carries a correction — return "unknown"
+    // so the caller's new value gets re-extracted instead of just re-prompting the same field.
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    return wordCount > 3 ? "unknown" : "no";
+  }
   if (saysYes && !saysNo) return "yes";
   return "unknown";
 }

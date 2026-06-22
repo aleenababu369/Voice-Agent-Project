@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { resolveAccountId } from "../plugins/auth.middleware.ts";
+import { isWhisperConfigured } from "../services/ai/whisper-adapter.ts";
 
 const followUpStatusList = ["new", "in_progress", "contacted", "resolved", "closed"] as const;
 const outcomeTypeList = ["none", "callback_scheduled", "appointment_confirmed", "enquiry_forwarded", "visitor_routed", "closed_no_action"] as const;
@@ -111,6 +112,9 @@ export function registerSystemRoutes(app: FastifyInstance) {
     languages: ["en-IN", "hi-IN", "kn-IN", "ta-IN", "ml-IN"],
     workflows: app.services.workflows.list(),
     demoModes: ["browser-simulator"],
+    // Tells the softphone whether to use the server-side Whisper recognizer or the browser's built-in one.
+    whisperAsr: isWhisperConfigured(),
+    asrEngine: isWhisperConfigured() ? "whisper" : "browser",
     features: [
       "goal_graph",
       "uncertainty_aware_orchestration",

@@ -4,6 +4,7 @@ import { agentProfileSchema, createContactSchema, createSessionSchema, consentSc
 import { AgentProfileAccessError, AgentProfileValidationError } from "../services/agent-profile.service.ts";
 import { placeCall, processCallTurn } from "../services/call-runner.ts";
 import { ensureLlmReady } from "../services/ai/llm-runtime.ts";
+import { transcribeAudio } from "../services/ai/whisper-adapter.ts";
 import { resolveAccountId } from "../plugins/auth.middleware.ts";
 import { randomUUID } from "node:crypto";
 
@@ -45,6 +46,18 @@ function sendProfileError(reply: { code: (statusCode: number) => { send: (body: 
 
 export function registerCallRoutes(app: FastifyInstance) {
   app.get("/v1/tenants", async () => ({ tenants: app.services.agentProfiles.listTenants() }));
+
+  // Public: server-side ASR. The softphone posts a recorded audio clip (raw body) and gets a transcript back
+  // from the configured Whisper server. Far more accurate than the browser recognizer for accented/multilingual speech.
+  app.post("/v1/asr", async (request, reply) => {
+    const audio = request.body as Buffer | undefined;
+    if (!audio || !Buffer.isBuffer(audio) || audio.length === 0) return reply.code(400).send({ error: "No audio provided" });
+    const { language } = request.query as { language?: string };
+    const mimeType = (request.headers["content-type"] as string | undefined) ?? "audio/webm";
+    const result = await transcribeAudio(audio, mimeType, language);
+    if (!result) return reply.code(502).send({ error: "Transcription unavailable" });
+    return result;
+  });
 
   app.get("/v1/contacts", async (request) => {
     const accountId = resolveAccountId(request, (request.query as { tenantId?: string }).tenantId);

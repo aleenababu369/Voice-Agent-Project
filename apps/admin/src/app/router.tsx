@@ -13,6 +13,8 @@ import { ProspectsListPage } from "../pages/prospects/ProspectsListPage";
 import { ProspectDetailPage } from "../pages/prospects/ProspectDetailPage";
 import { CallHistoryPage } from "../pages/calls/CallHistoryPage";
 import { CallDetailPage } from "../pages/calls/CallDetailPage";
+import { OperationsListPage } from "../pages/operations/OperationsListPage";
+import { OperationDetailPage } from "../pages/operations/OperationDetailPage";
 import { AnalyticsPage } from "../pages/AnalyticsPage";
 import { CallConsolePage } from "../pages/CallConsolePage";
 import { SettingsPage } from "../pages/SettingsPage";
@@ -66,6 +68,8 @@ export const router = createBrowserRouter([
       { path: "prospects/:prospectId", element: <ProspectDetailPage /> },
       { path: "calls", element: <CallHistoryPage /> },
       { path: "calls/:callId", element: <CallDetailPage /> },
+      { path: "operations", element: <OperationsListPage /> },
+      { path: "operations/:operationId", element: <OperationDetailPage /> },
       { path: "analytics", element: <AnalyticsPage /> },
       { path: "console", element: <CallConsolePage /> },
       { path: "settings", element: <SettingsPage /> }

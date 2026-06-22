@@ -139,6 +139,149 @@ const agentProfileTemplates: AgentProfileTemplate[] = [
       "Completion message should include at least caller name and program interest placeholders."
     ],
     sampleUtterance: "My name is Nisha interested in M.Tech inquiry admissions contact 9876543210"
+  },
+  {
+    id: "hospital-enquiry-template",
+    name: "Hospital Department Enquiry",
+    domain: "healthcare",
+    workflow: "general_enquiry",
+    description: "Answers patient enquiries about departments, services, and timings, and logs the request.",
+    languages: ["en-IN", "hi-IN", "kn-IN"],
+    welcomeMessage: "Hello, this is the hospital help desk. I can answer your enquiry and note your details.",
+    systemPrompt: "Be helpful, calm, and brief. Collect the caller name, what they are enquiring about, and a contact number. Never give medical advice or a diagnosis.",
+    completionMessageTemplate: "Thank you {{caller_name}}. I have logged your enquiry about {{inquiry_topic}} and our team will reach you at {{contact_number}}.",
+    escalationMessage: "Let me connect you to a hospital representative who can help further.",
+    slots: [
+      { key: "caller_name", label: "Caller name", prompt: "May I have your name?", required: true, examples: ["I am Asha"] },
+      { key: "inquiry_topic", label: "Enquiry topic", prompt: "What would you like to know about?", required: true, examples: ["Cardiology consultation timings"] },
+      { key: "contact_number", label: "Contact number", prompt: "What number should we use to follow up?", required: true, examples: ["number 9876543210"] }
+    ],
+    validationRules: [
+      "Include caller name, enquiry topic, and contact number as required fields.",
+      "Stay informational and never give medical advice or diagnosis.",
+      "Completion message should reference the caller name and enquiry topic."
+    ],
+    sampleUtterance: "I am Asha I want to know cardiology timings number 9876543210"
+  },
+  {
+    id: "hospital-reminder-template",
+    name: "Hospital Payment Reminder",
+    domain: "healthcare",
+    workflow: "fee_reminder",
+    description: "Reminds patients about a pending payment or report and records their acknowledgement.",
+    languages: ["en-IN", "hi-IN", "kn-IN"],
+    welcomeMessage: "Hello, this is a reminder call from the hospital billing desk.",
+    systemPrompt: "Be polite and clear. Confirm the patient identity, remind them about the pending payment, and capture their acknowledgement and a callback number.",
+    completionMessageTemplate: "Thank you {{patient_name}}. I have recorded your acknowledgement ({{acknowledgement_status}}) and we will call back on {{callback_number}} if needed.",
+    escalationMessage: "I will connect you to the billing team now.",
+    slots: [
+      { key: "patient_name", label: "Patient name", prompt: "May I confirm the patient name?", required: true, examples: ["I am Asha"] },
+      { key: "patient_id", label: "Patient ID", prompt: "What is the patient ID?", required: true, examples: ["id P12345"] },
+      { key: "acknowledgement_status", label: "Acknowledgement", prompt: "Have you noted the pending payment reminder?", required: true, examples: ["yes received"] },
+      { key: "callback_number", label: "Callback number", prompt: "What is a good callback number?", required: true, examples: ["callback 9876543210"] }
+    ],
+    validationRules: [
+      "Include patient name, patient ID, acknowledgement, and callback number as required fields.",
+      "Keep the reminder polite and never pressure the patient.",
+      "Completion message should reference the patient name and acknowledgement."
+    ],
+    sampleUtterance: "I am Asha id P12345 yes received callback 9876543210"
+  },
+  {
+    id: "hospital-followup-template",
+    name: "Hospital Discharge Follow-up",
+    domain: "healthcare",
+    workflow: "follow_up_confirmation",
+    description: "Confirms a post-discharge follow-up visit and the preferred date with the patient.",
+    languages: ["en-IN", "hi-IN", "kn-IN"],
+    welcomeMessage: "Hello, this is a follow-up call from the hospital care team.",
+    systemPrompt: "Be warm and reassuring. Confirm the patient identity, ask whether they can attend the follow-up, and capture a preferred date. Avoid medical advice.",
+    completionMessageTemplate: "Thank you {{patient_name}}. Your follow-up visit is {{confirmation_status}} for {{preferred_date}}.",
+    escalationMessage: "Let me connect you to a member of the care team.",
+    slots: [
+      { key: "patient_name", label: "Patient name", prompt: "May I confirm the patient name?", required: true, examples: ["I am Asha"] },
+      { key: "patient_id", label: "Patient ID", prompt: "What is the patient ID?", required: true, examples: ["id P12345"] },
+      { key: "confirmation_status", label: "Confirmation", prompt: "Can you attend the follow-up visit?", required: true, examples: ["yes I can attend"] },
+      { key: "preferred_date", label: "Preferred date", prompt: "Which date works best for the follow-up?", required: true, examples: ["tomorrow"] }
+    ],
+    validationRules: [
+      "Include patient name, patient ID, confirmation, and preferred date as required fields.",
+      "Keep wording warm and reassuring; do not give medical advice.",
+      "Completion message should reference the patient name and confirmation."
+    ],
+    sampleUtterance: "I am Asha id P12345 yes I can attend tomorrow"
+  },
+  {
+    id: "education-counseling-template",
+    name: "Education Counseling Appointment",
+    domain: "education",
+    workflow: "appointment_booking",
+    description: "Books a counseling or admissions appointment for a prospective student.",
+    languages: ["en-IN", "hi-IN", "kn-IN"],
+    welcomeMessage: "Hello, this is the admissions counseling assistant. I can book a counseling session for you.",
+    systemPrompt: "Be welcoming and encouraging. Collect the caller name, the program of interest, and a preferred date and time for the counseling session.",
+    completionMessageTemplate: "Thank you {{caller_name}}. Your counseling session for {{program_interest}} is set for {{preferred_date}} at {{preferred_time}}.",
+    escalationMessage: "I am connecting you to an admissions counselor now.",
+    slots: [
+      { key: "caller_name", label: "Caller name", prompt: "May I know your name?", required: true, examples: ["I am Nisha"] },
+      { key: "program_interest", label: "Program interest", prompt: "Which course or program are you interested in?", required: true, examples: ["program M.Tech"] },
+      { key: "preferred_date", label: "Preferred date", prompt: "What date would you prefer for counseling?", required: true, examples: ["tomorrow"] },
+      { key: "preferred_time", label: "Preferred time", prompt: "What time would you prefer?", required: true, examples: ["11 am"] }
+    ],
+    validationRules: [
+      "Include caller name, program interest, preferred date, and preferred time as required fields.",
+      "Use welcoming, encouraging language for prospective students.",
+      "Completion message should reference the caller name and program interest."
+    ],
+    sampleUtterance: "I am Nisha program M.Tech tomorrow 11 am"
+  },
+  {
+    id: "education-fee-reminder-template",
+    name: "Education Fee Reminder",
+    domain: "education",
+    workflow: "fee_reminder",
+    description: "Reminds a student about pending fees and records their acknowledgement.",
+    languages: ["en-IN", "hi-IN", "kn-IN"],
+    welcomeMessage: "Hello, this is a fee reminder call from the college accounts office.",
+    systemPrompt: "Be polite and clear. Confirm the caller name and student ID, remind about the pending fee, and capture their acknowledgement and a callback number.",
+    completionMessageTemplate: "Thank you {{caller_name}}. Acknowledgement recorded ({{acknowledgement_status}}) for student {{student_id}}; we will call {{callback_number}} if needed.",
+    escalationMessage: "I will connect you to the accounts office now.",
+    slots: [
+      { key: "caller_name", label: "Caller name", prompt: "May I have your name?", required: true, examples: ["I am Nisha"] },
+      { key: "student_id", label: "Student ID", prompt: "What is the student ID?", required: true, examples: ["id S2024"] },
+      { key: "acknowledgement_status", label: "Acknowledgement", prompt: "Have you noted the pending fee reminder?", required: true, examples: ["yes received"] },
+      { key: "callback_number", label: "Callback number", prompt: "What is a good callback number?", required: true, examples: ["callback 9876543210"] }
+    ],
+    validationRules: [
+      "Include caller name, student ID, acknowledgement, and callback number as required fields.",
+      "Keep the reminder polite and respectful.",
+      "Completion message should reference the caller name and acknowledgement."
+    ],
+    sampleUtterance: "I am Nisha id S2024 yes received callback 9876543210"
+  },
+  {
+    id: "education-followup-template",
+    name: "Education Admission Follow-up",
+    domain: "education",
+    workflow: "follow_up_confirmation",
+    description: "Confirms an admission or exam follow-up and the preferred date with the student.",
+    languages: ["en-IN", "hi-IN", "kn-IN"],
+    welcomeMessage: "Hello, this is an admissions follow-up call from the college.",
+    systemPrompt: "Be encouraging and clear. Confirm the caller name and student ID, ask whether they will proceed with the next step, and capture a preferred date.",
+    completionMessageTemplate: "Thank you {{caller_name}}. Your admission follow-up is {{confirmation_status}} for {{preferred_date}}.",
+    escalationMessage: "Let me connect you to the admissions team.",
+    slots: [
+      { key: "caller_name", label: "Caller name", prompt: "May I know your name?", required: true, examples: ["I am Nisha"] },
+      { key: "student_id", label: "Student ID", prompt: "What is the student ID or application number?", required: true, examples: ["id S2024"] },
+      { key: "confirmation_status", label: "Confirmation", prompt: "Will you proceed with the next admission step?", required: true, examples: ["yes confirmed"] },
+      { key: "preferred_date", label: "Preferred date", prompt: "Which date works for the next step?", required: true, examples: ["tomorrow"] }
+    ],
+    validationRules: [
+      "Include caller name, student ID, confirmation, and preferred date as required fields.",
+      "Use encouraging language for prospective students.",
+      "Completion message should reference the caller name and confirmation."
+    ],
+    sampleUtterance: "I am Nisha id S2024 yes confirmed tomorrow"
   }
 ];
 
@@ -148,6 +291,30 @@ function cloneSlots(slots: SlotDefinition[]) {
 
 function templateForUseCase(useCase: Domain): AgentProfileTemplate {
   return agentProfileTemplates.find((item) => item.domain === useCase) ?? agentProfileTemplates[0]!;
+}
+
+function templatesForUseCase(useCase: Domain): AgentProfileTemplate[] {
+  const matches = agentProfileTemplates.filter((item) => item.domain === useCase);
+  return matches.length > 0 ? matches : [templateForUseCase(useCase)];
+}
+
+function templateById(id: string): AgentProfileTemplate {
+  const template = agentProfileTemplates.find((item) => item.id === id);
+  if (!template) throw new Error(`Agent profile template not found: ${id}`);
+  return template;
+}
+
+/** Short, human label for the use case a workflow represents (used to name provisioned agents). */
+function useCaseLabel(workflow: WorkflowType): string {
+  switch (workflow) {
+    case "appointment_booking": return "Appointments";
+    case "general_enquiry": return "Enquiries";
+    case "institution_reception": return "Reception";
+    case "fee_reminder": return "Reminders";
+    case "follow_up_confirmation": return "Follow-ups";
+    case "frontdesk_reception": return "Reception";
+    default: return "Agent";
+  }
 }
 
 function buildProfileFromTemplate(template: AgentProfileTemplate, accountId: string, customName?: string, status: AgentProfile["status"] = "deployed"): AgentProfile {
@@ -191,12 +358,22 @@ class AgentProfileService {
 
   constructor() {
     const seeded = [
-      buildProfileFromTemplate(agentProfileTemplates[0]!, "city-hospital", "City Hospital Appointment Desk"),
-      buildProfileFromTemplate(agentProfileTemplates[2]!, "greenfield-college", "Greenfield Admissions Reception"),
-      buildProfileFromTemplate(agentProfileTemplates[1]!, "northstar-frontdesk", "Northstar Reception Desk")
+      // Hospital demo account: one deployed agent per healthcare use case.
+      buildProfileFromTemplate(templateById("hospital-appointment-template"), "city-hospital", "City Hospital Appointment Desk"),
+      buildProfileFromTemplate(templateById("hospital-enquiry-template"), "city-hospital", "City Hospital Enquiry Desk"),
+      buildProfileFromTemplate(templateById("hospital-reminder-template"), "city-hospital", "City Hospital Billing Reminder"),
+      buildProfileFromTemplate(templateById("hospital-followup-template"), "city-hospital", "City Hospital Discharge Follow-up"),
+      // Education demo account: one deployed agent per education use case.
+      buildProfileFromTemplate(templateById("education-reception-template"), "greenfield-college", "Greenfield Admissions Reception"),
+      buildProfileFromTemplate(templateById("education-counseling-template"), "greenfield-college", "Greenfield Counseling Desk"),
+      buildProfileFromTemplate(templateById("education-fee-reminder-template"), "greenfield-college", "Greenfield Fee Reminder"),
+      buildProfileFromTemplate(templateById("education-followup-template"), "greenfield-college", "Greenfield Admission Follow-up"),
+      // Front desk demo account.
+      buildProfileFromTemplate(templateById("frontdesk-reception-template"), "northstar-frontdesk", "Northstar Reception Desk")
     ];
     for (const profile of seeded) {
-      profile.phoneNumber = this.allocatePhoneNumber();
+      // Phone numbers are assigned in hydrate(), after any persisted numbers are loaded, so a seed
+      // can never be issued a number that a previously-saved agent already owns.
       this.profiles.set(profile.id, profile);
       this.versions.set(profile.id, [this.createVersionSnapshot(profile, SYSTEM_ACTOR, "Initial demo seed")]);
     }
@@ -235,14 +412,23 @@ class AgentProfileService {
     return authService.listAccounts().map((account) => ({ id: account.id, name: account.name, description: `${account.name} workspace`, domainFocus: account.useCase ?? "education", createdAt: account.createdAt }));
   }
 
-  /** Create the starter agent for a freshly onboarded account, from the use-case template. */
+  /** Provision one draft agent per use case for a freshly onboarded account's domain. Returns the primary (first). */
   provisionStarterAgent(accountId: string, useCase: Domain, accountName?: string) {
-    const template = templateForUseCase(useCase);
-    const profile = buildProfileFromTemplate(template, accountId, `${accountName ?? this.getAccount(accountId).name} Agent`, "draft");
-    profile.phoneNumber = this.allocatePhoneNumber();
-    this.profiles.set(profile.id, profile);
-    this.versions.set(profile.id, [this.createVersionSnapshot(profile, accountActor(accountId), "Starter agent provisioned")]);
-    return profile;
+    return this.provisionUseCaseAgents(accountId, useCase, accountName)[0]!;
+  }
+
+  /** Create a draft agent for every use case in the account's domain (e.g. hospital → appointments, enquiries, reminders, follow-ups). */
+  provisionUseCaseAgents(accountId: string, useCase: Domain, accountName?: string): AgentProfile[] {
+    const name = accountName ?? this.getAccount(accountId).name;
+    const created: AgentProfile[] = [];
+    for (const template of templatesForUseCase(useCase)) {
+      const profile = buildProfileFromTemplate(template, accountId, `${name} · ${useCaseLabel(template.workflow)}`, "draft");
+      profile.phoneNumber = this.allocatePhoneNumber();
+      this.profiles.set(profile.id, profile);
+      this.versions.set(profile.id, [this.createVersionSnapshot(profile, accountActor(accountId), "Use-case agent provisioned")]);
+      created.push(profile);
+    }
+    return created;
   }
 
   setDeployment(profileId: string, deployed: boolean, accountId: string) {

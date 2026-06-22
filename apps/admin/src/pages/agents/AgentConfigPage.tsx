@@ -141,10 +141,10 @@ export function AgentConfigPage() {
         <div className="space-y-4">
           <Card>
             <CardContent className="p-5">
-              <Eyebrow>Templates</Eyebrow>
-              <p className="mt-1 mb-3 text-sm text-muted-foreground">Start from a guided use case.</p>
+              <Eyebrow>Use cases</Eyebrow>
+              <p className="mt-1 mb-3 text-sm text-muted-foreground">Start from a guided {draft.domain} use case.</p>
               <div className="grid gap-2">
-                {templates.map((template) => (
+                {templates.filter((template) => template.domain === draft.domain).map((template) => (
                   <div key={template.id} className="flex items-center justify-between rounded-lg border border-border bg-card p-3">
                     <div className="flex items-center gap-2"><Sparkles className="h-4 w-4" /><div><strong className="block text-sm">{template.name}</strong><span className="text-xs text-muted-foreground">{template.workflow}</span></div></div>
                     <Button size="sm" variant="ghost" onClick={() => applyTemplate(template)}>Use</Button>

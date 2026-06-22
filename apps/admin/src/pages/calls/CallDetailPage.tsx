@@ -148,10 +148,10 @@ export function CallDetailPage() {
                 <Eyebrow>Operations</Eyebrow>
                 <div className="mt-3 grid gap-2">
                   {detail.operations.map((operation) => (
-                    <div key={operation.id} className="flex items-center justify-between rounded-lg bg-secondary/50 px-3 py-2 text-sm">
+                    <Link key={operation.id} to={`/operations/${operation.id}`} className="flex items-center justify-between rounded-lg bg-secondary/50 px-3 py-2 text-sm transition-colors hover:bg-secondary">
                       <Badge>{formatLabel(operation.type)}</Badge>
                       <span className="font-mono text-xs">{operation.referenceId}</span>
-                    </div>
+                    </Link>
                   ))}
                 </div>
               </CardContent>

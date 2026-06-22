@@ -22,6 +22,9 @@ export function buildApp() {
     reply.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
   });
   app.options("*", async (_request, reply) => reply.code(204).send());
+  // Accept raw audio uploads (softphone -> Whisper ASR) as a Buffer instead of trying to JSON-parse them.
+  app.addContentTypeParser(/^audio\//, { parseAs: "buffer" }, (_request, body, done) => done(null, body));
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_request, body, done) => done(null, body));
   // Request logger (morgan-style) so you can see traffic hitting the API in the terminal.
   if (process.env.LOG_REQUESTS !== "false") {
     app.addHook("onResponse", async (request, reply) => {

@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
   BarChart3,
   Bot,
+  ClipboardCheck,
   ClipboardList,
   LayoutDashboard,
   Megaphone,
@@ -26,7 +27,7 @@ const NAV: Array<{ group: string; items: NavItem[] }> = [
   { group: "Workspace", items: [{ to: "/", label: "Overview", icon: LayoutDashboard, end: true }, { to: "/analytics", label: "Analytics", icon: BarChart3 }] },
   { group: "Build", items: [{ to: "/agents", label: "Agents", icon: Bot }] },
   { group: "Run", items: [{ to: "/campaigns", label: "Campaigns", icon: Megaphone }, { to: "/prospects", label: "Prospects", icon: Users }, { to: "/console", label: "Call console", icon: PhoneCall }] },
-  { group: "Records", items: [{ to: "/calls", label: "Call history", icon: ClipboardList }] }
+  { group: "Records", items: [{ to: "/operations", label: "Operations", icon: ClipboardCheck }, { to: "/calls", label: "Call history", icon: ClipboardList }] }
 ];
 
 export function Sidebar() {

@@ -6,13 +6,50 @@ export interface ScoredSlot {
   confidence: number;
 }
 
-// Per-pattern reliability. Tight, unambiguous patterns (dates, ids, numbers) score high; loose
-// free-text or greedy name/department captures score lower so the grounding policy confirms them.
+// Free-text fields legitimately hold a whole phrase; everything else should be a tight value.
+export const FREE_TEXT_SLOT_KEYS = new Set<string>(["issue", "purpose", "inquiry_topic"]);
+
+// Conversational lead-ins a caller wraps the actual value in. Longer phrases first so they match before short ones.
+const LEAD_IN = /^(?:i am interested in|i'?m interested in|interested in|i would like to know|i'?d like to know|i want to know|want to know|i would like to book|i want to book|i would like to|i'?d like to|i want to|i wanna|tell me about|know about|calling about|enquiring about|asking about|regarding|my spelling is|the spelling is|spelling is|it is spelled|it'?s spelled|that is spelled|spelled|spelt|my name is|patient name is|the patient is|the name is|name is|this is|i need|i want|i am|i'?m|it'?s|it is|its|please)\b[\s,:-]*/i;
+
+/** Join a spelled-out value ("A - l - e - e - n - a" or "A l e e n a") into a single word ("Aleena"). */
+function assembleSpelledOut(value: string): string {
+  const tokens = value.split(/[\s.,_-]+/).filter(Boolean);
+  if (tokens.length < 2) return value;
+  const singles = tokens.filter((token) => /^[a-z0-9]$/i.test(token));
+  if (singles.length >= 2 && singles.length / tokens.length >= 0.6) {
+    const word = singles.join("");
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  }
+  return value;
+}
+
+/**
+ * Pull the clean value out of a spoken phrase so the agent confirms/stores "Leena", not "my name is Leena".
+ * Strips conversational lead-ins for every field, assembles spelled-out words, and drops trailing clauses
+ * ("…and I want…") for structured fields.
+ */
+export function normalizeSlotValue(key: string, raw: string): string {
+  const original = String(raw).trim();
+  let value = original;
+  let prev = "";
+  while (value && value !== prev) { prev = value; value = value.replace(LEAD_IN, "").trim(); }
+  if (!FREE_TEXT_SLOT_KEYS.has(key)) {
+    value = assembleSpelledOut(value);
+    value = value.replace(/[\s,]+(?:and|but|because|regarding)\b.*$/i, "").trim();
+  }
+  value = value.replace(/^[\s,."'?!-]+|[\s,."'?!-]+$/g, "").trim();
+  return value || original;
+}
+
+// Per-pattern reliability. Tight, unambiguous patterns (dates, ids, numbers) score high; the rest score
+// "good enough to accept" so the agent doesn't pester the caller — the grounding policy only steps in for
+// genuinely low-confidence values (or when the LLM itself reports it is unsure).
 const SCORE = {
-  precise: 0.85, // age, ids, phone numbers, explicit dates/times
-  moderate: 0.7, // keyword-anchored statuses
-  loose: 0.62, // greedy name / doctor / department / program captures
-  freeText: 0.5 // "whatever the caller said" dumped into a free-text slot
+  precise: 0.92, // age, ids, phone numbers, explicit dates/times
+  moderate: 0.82, // keyword-anchored statuses
+  loose: 0.74, // greedy name / doctor / department / program captures
+  freeText: 0.72 // "whatever the caller said" dumped into a free-text slot
 } as const;
 
 class SlotExtractor {

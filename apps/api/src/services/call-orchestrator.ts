@@ -10,10 +10,10 @@ import type {
 } from "../../../../packages/contracts/src/index.ts";
 import { aiAdapters } from "./ai/mock-adapters.ts";
 import { getLlmTurnAdapter } from "./ai/openai-compatible-adapter.ts";
-import { slotExtractor } from "./slot-extractor.ts";
+import { FREE_TEXT_SLOT_KEYS, normalizeSlotValue, slotExtractor } from "./slot-extractor.ts";
 import { safetyPolicy } from "./safety-policy.ts";
 import { bandFor, clamp01, combineConfidence, getUncertaintyThresholds, interpretConfirmation } from "./dialogue/uncertainty.ts";
-import { confirmPhrase, detectLanguage, repromptPhrase, resolveLanguageCode, retryPhrase } from "./dialogue/language.ts";
+import { confirmPhrase, detectLanguage, detectLanguageCommand, repromptPhrase, resolveCallLanguage, resolveLanguageCode, retryPhrase } from "./dialogue/language.ts";
 
 interface ProcessTurnInput {
   session: CallSession;
@@ -58,15 +58,18 @@ class CallOrchestrator {
       return this.buildDecision({ input, action: "escalate_to_human", confidence, slotState: prior, missingSlots: prior.missing, responseText: input.profile.escalationMessage, reason: safetyTrigger.reason, promptStyle: "escalation", escalationSummary });
     }
 
-    // Utterance-level floor: if we barely heard the caller at all, ask them to repeat the whole thing.
-    if (confidence < 0.6) {
+    // Utterance-level floor: only re-prompt when the audio was genuinely unintelligible. Browser ASR confidence
+    // is unreliable (often low even for clear speech), so keep this lenient and let the LLM do the understanding.
+    if (confidence < 0.35) {
       return this.buildDecision({ input, action: "ask_clarification", confidence, slotState: prior, missingSlots: prior.missing, responseText: "I want to make sure I understood you. Could you please repeat that more clearly?", reason: "Recognition confidence is below the safe threshold.", promptStyle: "clarification" });
     }
 
     // IN-CALL LANGUAGE IDENTIFICATION — detect the caller's language (native script / romanized) up front.
     const supportedLanguages = input.profile.languages;
     const heuristic = detectLanguage(transcript, supportedLanguages);
-    let switchLanguage = heuristic && heuristic.language !== input.session.language ? heuristic.language : undefined;
+    const languageCommand = detectLanguageCommand(transcript, supportedLanguages);
+    const preResolvedLanguage = resolveCallLanguage({ current: input.session.language, supported: supportedLanguages, transcript, heuristic, commanded: languageCommand });
+    let switchLanguage = preResolvedLanguage !== input.session.language ? preResolvedLanguage : undefined;
 
     const requiredSlots = input.profile.slots.filter((slot) => slot.required).map((slot) => slot.key);
     const thresholds = getUncertaintyThresholds();
@@ -137,8 +140,16 @@ class CallOrchestrator {
 
     // Resolve the final language: native script always wins; otherwise prefer the LLM's judgment, then the keyword hint.
     const llmLanguage = resolveLanguageCode(llmLanguageRaw, supportedLanguages);
-    const resolvedLanguage = heuristic?.source === "script" ? heuristic.language : (llmLanguage ?? heuristic?.language ?? input.session.language);
+    const resolvedLanguage = resolveCallLanguage({ current: input.session.language, supported: supportedLanguages, transcript, heuristic, commanded: languageCommand, llm: llmLanguage });
     switchLanguage = resolvedLanguage !== input.session.language ? resolvedLanguage : undefined;
+
+    // The model sometimes drifts into another language (e.g. replies in Hindi for an English caller because the
+    // name sounds regional). If we are NOT switching, drop a reply written in a different script so the agent
+    // never suddenly speaks a language we didn't switch to; deterministic phrasing fills in instead.
+    if (llmReply && !switchLanguage) {
+      const replyLanguage = detectLanguage(llmReply, supportedLanguages);
+      if (replyLanguage && replyLanguage.language !== input.session.language) llmReply = null;
+    }
 
     if (llmEscalate) {
       const escalationSummary: EscalationSummary = { trigger: "manual_request", reason: "The caller asked to speak with a human representative.", lastTranscript: transcript, recommendedAction: "Transfer the call to an operator with the conversation summary." };
@@ -158,16 +169,29 @@ class CallOrchestrator {
       let nlu: number | undefined;
       const llmValue = llmSlots[slot.key];
       const scored = ruleScored[slot.key];
+      let fromLlm = false;
       if (llmValue !== undefined && String(llmValue).trim()) {
         value = String(llmValue).trim();
         nlu = clamp01(llmFieldConfidence[slot.key] ?? llmOverall);
+        fromLlm = true;
       } else if (scored) {
         value = scored.value;
         nlu = scored.confidence;
       }
       if (value === undefined || nlu === undefined) continue;
+      // A free-text slot (issue / enquiry topic) must NOT swallow the answer to a different question. The rule
+      // extractor dumps the whole utterance into it on every turn; only accept that when it's the field we just
+      // asked for. Values the LLM extracted are fine (the LLM only fills what the caller actually stated).
+      if (!fromLlm && FREE_TEXT_SLOT_KEYS.has(slot.key) && slot.key !== priorMissing[0]) continue;
+      // Reduce the spoken phrase to the clean value ("my name is Leena" -> "Leena") so the agent never parrots filler back.
+      value = normalizeSlotValue(slot.key, value);
+      if (!value) continue;
 
-      const combined = combineConfidence(asrResult.confidence, nlu);
+      // When the value came from the LLM, trust the model's own certainty (it understood the meaning) and only
+      // lightly factor in the browser's unreliable ASR score. Rule-extracted values lean on ASR more.
+      const combined = fromLlm
+        ? clamp01(0.85 * nlu + 0.15 * clamp01(asrResult.confidence))
+        : combineConfidence(asrResult.confidence, nlu);
       const band = bandFor(combined, thresholds);
       const attemptsForSlot = belief.attempts[slot.key] ?? 0;
 
