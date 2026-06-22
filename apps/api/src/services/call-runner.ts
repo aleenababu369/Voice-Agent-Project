@@ -38,6 +38,18 @@ export async function processCallTurn(input: TurnInput): Promise<TurnOutput> {
   const { session, profile } = input;
   const asrConfidence = input.asrConfidence ?? 0.9;
   const nluConfidence = input.nluConfidence ?? 0.88;
+  // Rebuild a bounded dialogue window from durable turn events. The LLM previously saw only the latest
+  // utterance and collected slots, which made it repeat questions and lose conversational references.
+  const events = await persistenceService.listEvents(session.id);
+  const history = events
+    .filter((event) => event.type === "turn_processed" || event.type === "workflow_completed")
+    .flatMap((event) => {
+      const turns: Array<{ role: "agent" | "caller"; text: string }> = [];
+      if (typeof event.payload.transcript === "string" && event.payload.transcript.trim()) turns.push({ role: "caller", text: event.payload.transcript.trim() });
+      if (typeof event.payload.responseText === "string" && event.payload.responseText.trim()) turns.push({ role: "agent", text: event.payload.responseText.trim() });
+      return turns;
+    })
+    .slice(-12);
 
   const result = await callOrchestrator.processTurn({
     session,
@@ -45,7 +57,8 @@ export async function processCallTurn(input: TurnInput): Promise<TurnOutput> {
     asrConfidence,
     nluConfidence,
     workflow: workflowFromProfile(profile),
-    profile
+    profile,
+    history
   });
 
   const updatedSession = await persistenceService.applyTurn(session.id, input.transcript, result);

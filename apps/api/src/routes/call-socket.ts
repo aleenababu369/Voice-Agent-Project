@@ -16,6 +16,7 @@ type Role = "agent" | "softphone";
 interface Room {
   sessionId: string;
   sockets: Map<Role, WebSocket>;
+  turnQueue: Promise<void>;
 }
 
 const rooms = new Map<string, Room>();
@@ -23,7 +24,7 @@ const rooms = new Map<string, Room>();
 function getRoom(sessionId: string): Room {
   let room = rooms.get(sessionId);
   if (!room) {
-    room = { sessionId, sockets: new Map() };
+    room = { sessionId, sockets: new Map(), turnQueue: Promise.resolve() };
     rooms.set(sessionId, room);
   }
   return room;
@@ -102,27 +103,28 @@ export function registerCallSocketRoutes(app: FastifyInstance) {
         }
 
         if (message.type === "prospect_utterance" && typeof message.text === "string" && message.text.trim()) {
-          if (!session.consentCaptured) {
-            session = (await persistenceService.captureConsent(sessionId, true)) ?? session;
-          }
           broadcast(room, { type: "caller_said", text: message.text });
           // The softphone sends the browser's speech-recognition confidence so the agent can reason about uncertainty.
           const asrConfidence = typeof message.asrConfidence === "number" && message.asrConfidence > 0 ? Math.min(1, message.asrConfidence) : undefined;
-          const result = await processCallTurn({ session, profile, transcript: message.text, ...(asrConfidence !== undefined ? { asrConfidence } : {}) });
-          const isComplete = result.decision.action === "complete_call";
-          const isEscalation = result.decision.action === "escalate_to_human";
-
-          if (isComplete) {
-            // Send the farewell/completion message with done:false so TTS speaks it fully.
-            broadcast(room, { type: "agent_reply", reply: result.decision.responseText, decision: result.decision, session: result.session, operation: result.operation, done: false });
-            // After a delay (enough for TTS to finish the farewell), send the ended signal.
-            setTimeout(() => {
-              broadcast(room, { type: "ended" });
-            }, 5000);
-          } else {
-            const done = isEscalation;
-            broadcast(room, { type: "agent_reply", reply: result.decision.responseText, decision: result.decision, session: result.session, operation: result.operation, done });
-          }
+          const runTurn = async () => {
+            // Always reload after the previous queued turn so slot state, language, and history are current.
+            let currentSession = await persistenceService.getSession(sessionId);
+            if (!currentSession) return;
+            const currentProfile = currentSession.agentProfileId ? agentProfileService.get(currentSession.agentProfileId, currentSession.tenantId) : null;
+            if (!currentProfile) return;
+            if (!currentSession.consentCaptured) currentSession = (await persistenceService.captureConsent(sessionId, true)) ?? currentSession;
+            const result = await processCallTurn({ session: currentSession, profile: currentProfile, transcript: message.text!, ...(asrConfidence !== undefined ? { asrConfidence } : {}) });
+            const isComplete = result.decision.action === "complete_call";
+            const isEscalation = result.decision.action === "escalate_to_human";
+            if (isComplete) {
+              broadcast(room, { type: "agent_reply", reply: result.decision.responseText, decision: result.decision, session: result.session, operation: result.operation, done: false });
+              setTimeout(() => { broadcast(room, { type: "ended" }); }, 5000);
+            } else {
+              broadcast(room, { type: "agent_reply", reply: result.decision.responseText, decision: result.decision, session: result.session, operation: result.operation, done: isEscalation });
+            }
+          };
+          room.turnQueue = room.turnQueue.then(runTurn, runTurn);
+          await room.turnQueue;
           return;
         }
 

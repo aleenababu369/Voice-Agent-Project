@@ -1,5 +1,6 @@
 import type { LlmTurnAdapter, LlmTurnRequest, LlmTurnResult } from "./types.ts";
 import { LANGUAGE_NAMES } from "../dialogue/language.ts";
+import { ensureLlmReady } from "./llm-runtime.ts";
 
 interface AdapterConfig {
   baseUrl: string;
@@ -28,6 +29,8 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
     "Respond with ONLY a JSON object, no prose, in this exact shape:",
     '{"reply": string, "extractedFields": {"<field_key>": "<value>"}, "fieldConfidence": {"<field_key>": number}, "language": string, "action": "collect" | "complete" | "ask_clarification" | "escalate", "confidence": number}',
     "Rules:",
+    "- Treat the conversation history and Already collected fields as authoritative memory. Never ask again for a field that is already collected unless the caller explicitly corrects it.",
+    "- Ask only for fields listed under Still missing. Do not invent extra sub-questions or restart the conversation.",
     "- Put a field in extractedFields ONLY if the caller actually stated it in their latest message. Use the exact field keys above.",
     "- Extract the CLEAN value only, never the whole sentence: from \"my name is Leena\" set the name to \"Leena\"; from \"I want cardiology timings\" set the topic to \"cardiology timings\". Never include lead-in words like \"my name is\", \"I want\", \"I am interested in\".",
     "- Ignore filler and anything that repeats your own previous question; if the caller only echoed your words and gave no real answer, return empty extractedFields and ask again.",
@@ -37,7 +40,7 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
     "- action = \"complete\" only when every required field is collected. Otherwise \"collect\".",
     "- action = \"escalate\" if the caller asks for a human or there is a safety concern.",
     "- confidence is your 0..1 certainty in understanding the caller overall.",
-    "- For phone number or contact number fields, the value MUST be a complete 10-digit Indian mobile number. If the caller gives fewer than 10 digits, do NOT put it in extractedFields \u2014 instead ask them to provide the full number. Never read a phone number as a large number (lakhs, crores); always read it digit by digit.",
+    "- For phone number or contact number fields, remove spaces and dashes first. The value MUST then be a complete 10-digit Indian mobile number. If the caller gives fewer than 10 digits, do NOT put it in extractedFields — instead ask for the full number. Never read a phone number as a large number (lakhs, crores); always read it digit by digit.",
     "- reply is what you SAY next to the caller (short, spoken style)."
   ].join("\n");
 }
@@ -67,6 +70,21 @@ class OpenAiCompatibleLlmAdapter implements LlmTurnAdapter {
   }
 
   async runTurn(request: LlmTurnRequest): Promise<LlmTurnResult | null> {
+    const configuredAttempts = Number(process.env.LLM_TURN_ATTEMPTS ?? 3);
+    const attempts = Number.isFinite(configuredAttempts) ? Math.max(1, Math.floor(configuredAttempts)) : 3;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      // This also waits for a local model cold-start/restart instead of immediately taking the rule path.
+      if (await ensureLlmReady()) {
+        const result = await this.requestTurn(request);
+        if (result) return result;
+      }
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+    }
+    console.error(`[llm] turn failed after ${attempts} attempts; real model did not return a usable response.`);
+    return null;
+  }
+
+  private async requestTurn(request: LlmTurnRequest): Promise<LlmTurnResult | null> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
     try {
@@ -80,6 +98,7 @@ class OpenAiCompatibleLlmAdapter implements LlmTurnAdapter {
           model: this.config.model,
           temperature: 0.2,
           response_format: { type: "json_object" },
+          keep_alive: process.env.LLM_KEEP_ALIVE ?? "10m",
           messages: [
             { role: "system", content: buildSystemPrompt(request) },
             ...(request.history ?? []).map((turn) => ({ role: turn.role === "agent" ? "assistant" : "user", content: turn.text })),

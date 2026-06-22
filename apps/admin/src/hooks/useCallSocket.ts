@@ -39,6 +39,17 @@ function speakText(text: string, lang: string) {
   }
 }
 
+const CALL_CHANGED_EVENT = "va:call-changed";
+const CALL_CHANGED_STORAGE_KEY = "va_call_changed";
+
+/** Notify record/analytics screens immediately, including admin screens open in another tab. */
+function notifyCallChanged(sessionId: string) {
+  if (typeof window === "undefined") return;
+  const detail = { sessionId, changedAt: Date.now() };
+  window.dispatchEvent(new CustomEvent(CALL_CHANGED_EVENT, { detail }));
+  try { window.localStorage.setItem(CALL_CHANGED_STORAGE_KEY, JSON.stringify(detail)); } catch { /* storage may be disabled */ }
+}
+
 export function useCallSocket(options: { sessionId: string | null; role: "agent" | "softphone"; speak?: boolean }) {
   const { sessionId, role } = options;
   const speak = options.speak ?? role === "softphone";
@@ -99,10 +110,12 @@ export function useCallSocket(options: { sessionId: string | null; role: "agent"
           lastConfidence: typeof decision?.confidence === "number" ? decision.confidence : current.lastConfidence,
           confirming: decision?.action === "confirm_slot" ? (decision.confirming ?? null) : null
         }));
+        if (message.session) notifyCallChanged(sessionId);
       } else if (message.type === "caller_said" && typeof message.text === "string") {
         push("caller", message.text);
       } else if (message.type === "ended") {
         setState((current) => ({ ...current, done: true }));
+        notifyCallChanged(sessionId);
       }
     };
     return () => {

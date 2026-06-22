@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Download, Megaphone } from "lucide-react";
-import { useAppSelector } from "../../app/hooks";
+import { useAppDispatch, useAppSelector } from "../../app/hooks";
+import { fetchAnalytics, fetchSessions } from "../../features/platform/platformSlice";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,12 +10,44 @@ import { Input } from "@/components/ui/input";
 import { EmptyState, MetricCard, SectionHeader, SimpleSelect, formatLabel } from "../../components/common";
 
 export function CallHistoryPage() {
+  const dispatch = useAppDispatch();
   const sessions = useAppSelector((state) => state.platform.sessions);
   const analytics = useAppSelector((state) => state.platform.analytics);
   const campaigns = useAppSelector((state) => state.platform.campaigns);
   const [search, setSearch] = useState("");
   const [direction, setDirection] = useState("all");
   const [status, setStatus] = useState("all");
+
+  const refreshRecords = useCallback(() => {
+    void dispatch(fetchSessions());
+    void dispatch(fetchAnalytics());
+  }, [dispatch]);
+
+  useEffect(() => {
+    refreshRecords();
+    let refreshTimer = 0;
+    const scheduleRefresh = () => {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(refreshRecords, 100);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === "va_call_changed") scheduleRefresh();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") scheduleRefresh();
+    };
+    window.addEventListener("va:call-changed", scheduleRefresh);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", scheduleRefresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearTimeout(refreshTimer);
+      window.removeEventListener("va:call-changed", scheduleRefresh);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", scheduleRefresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refreshRecords]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();

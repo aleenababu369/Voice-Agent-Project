@@ -122,7 +122,7 @@ const agentProfileTemplates: AgentProfileTemplate[] = [
     domain: "education",
     workflow: "institution_reception",
     description: "Handles admissions, program, and campus enquiries for educational institutions.",
-    languages: ["en-IN", "hi-IN", "kn-IN"],
+    languages: ["en-IN", "hi-IN", "kn-IN", "ta-IN", "ml-IN"],
     welcomeMessage: "Hello, this is the education reception assistant. I can help with admissions and campus enquiries.",
     systemPrompt: "Be welcoming and informative. Collect the caller name, program interest, and enquiry topic.",
     completionMessageTemplate: "Thank you. I have noted the enquiry from {{caller_name}} about {{program_interest}} and {{inquiry_topic}}. We will follow up on {{contact_number}}.",
@@ -551,6 +551,15 @@ class AgentProfileService {
         const profile = stripId<AgentProfile>(doc as Record<string, unknown>);
         if (profile) this.profiles.set(profile.id, profile);
       }
+    }
+    // Upgrade only the untouched legacy demo reception profile. Older persisted seeds advertised
+    // en/hi/kn even though the platform and this use case support Tamil and Malayalam as well.
+    const educationReception = this.profiles.get("greenfield-college-institution_reception");
+    if (educationReception && educationReception.languages.join(",") === "en-IN,hi-IN,kn-IN") {
+      this.profiles.set(educationReception.id, {
+        ...educationReception,
+        languages: ["en-IN", "hi-IN", "kn-IN", "ta-IN", "ml-IN"]
+      });
     }
     const versionsCollection = await getCollection(VERSIONS_COLLECTION);
     if (versionsCollection) {

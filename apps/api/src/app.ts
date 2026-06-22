@@ -13,6 +13,7 @@ import { authService } from "./services/auth.service.ts";
 import { callOrchestrator } from "./services/call-orchestrator.ts";
 import { persistenceService } from "./services/persistence.service.ts";
 import { workflowRegistry } from "./services/workflow-registry.ts";
+import { stopLlmKeepWarm } from "./services/ai/llm-runtime.ts";
 
 export function buildApp() {
   const app = Fastify({ logger: false });
@@ -54,7 +55,7 @@ export function buildApp() {
     auth: authService
   });
   registerAuth(app, { enforce: process.env.AUTH_ENFORCE === "true" });
-  app.addHook("onClose", async () => { await persistenceService.close(); });
+  app.addHook("onClose", async () => { stopLlmKeepWarm(); await persistenceService.close(); });
   registerAuthRoutes(app);
   registerSystemRoutes(app);
   registerCallRoutes(app);

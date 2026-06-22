@@ -99,6 +99,11 @@ class SlotExtractor {
     const ageMatch = transcript.match(/\b(?:age|aged)\s*[:#-]?\s*(\d{1,3})\b/i);
     const genericIdMatch = transcript.match(/\b(?:id|student id|patient id|caller id)\s*[:#-]?\s*([a-zA-Z0-9-]+)\b/i);
     const contactMatch = transcript.match(/\b(?:phone|number|contact|callback)\s*[:#-]?\s*(\+?\d[\d -]{9,})\b/i);
+    // A caller normally answers a contact-number question with digits only. Accept a bare spaced/dashed
+    // number as well; normalizeSlotValue performs the final strict 10-digit validation.
+    const bareContactMatch = transcript.match(/(?:^|\s)(\+?\d(?:[\d -]*\d)?)(?:\s|$)/);
+    const bareContact = bareContactMatch?.[1];
+    const contactCandidate = contactMatch?.[1] ?? ((bareContact?.replace(/\D/g, "").length ?? 0) >= 10 ? bareContact : undefined);
     const doctorMatch = transcript.match(/\b(?:doctor|dr\.?|department)\s*[:#-]?\s*([a-zA-Z ]{2,})\b/i);
 
     if (keys.includes("patient_name")) set("patient_name", nameMatch?.[1], SCORE.loose);
@@ -109,8 +114,8 @@ class SlotExtractor {
     if (keys.includes("age")) set("age", ageMatch?.[1], SCORE.precise);
     if (keys.includes("student_id")) set("student_id", genericIdMatch?.[1], SCORE.precise);
     if (keys.includes("patient_id")) set("patient_id", genericIdMatch?.[1], SCORE.precise);
-    if (keys.includes("contact_number")) set("contact_number", contactMatch?.[1], SCORE.precise);
-    if (keys.includes("callback_number")) set("callback_number", contactMatch?.[1], SCORE.precise);
+    if (keys.includes("contact_number")) set("contact_number", contactCandidate, SCORE.precise);
+    if (keys.includes("callback_number")) set("callback_number", contactCandidate, SCORE.precise);
     if (keys.includes("doctor_name")) set("doctor_name", doctorMatch?.[1], SCORE.loose);
 
     if (keys.includes("issue")) set("issue", transcript, SCORE.freeText);

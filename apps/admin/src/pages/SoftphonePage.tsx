@@ -52,7 +52,9 @@ const LANGUAGE_LABELS: Record<string, string> = {
 const FILLER_PATTERN = /\b(uh+|um+|hmm+|mm+|mhm+|er+|err+|ah+|eh+|huh)\b/gi;
 
 function wordsOf(text: string): string[] {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+  // Keep letters and numbers from every script. The previous ASCII-only cleanup turned
+  // Hindi/Malayalam/etc. into an empty string, so valid native-script speech was discarded as noise.
+  return text.toLocaleLowerCase().match(/[\p{L}\p{N}\p{M}]+/gu) ?? [];
 }
 
 /** Strip recognizer noise artifacts and filler so only meaningful speech reaches the agent and the LLM. */

@@ -13,10 +13,14 @@ const QUICK_TIMEOUT_MS = 1500; // reachability probe
 const START_TIMEOUT_MS = 25000; // how long to wait for a freshly-spawned server
 const WARM_TIMEOUT_MS = 60000; // first model load can be slow
 const POLL_INTERVAL_MS = 700;
+const configuredKeepWarmInterval = Number(process.env.LLM_KEEP_WARM_INTERVAL_MS ?? 60000);
+const KEEP_WARM_INTERVAL_MS = Number.isFinite(configuredKeepWarmInterval) ? Math.max(15000, configuredKeepWarmInterval) : 60000;
 
 let starting: Promise<boolean> | null = null;
 let warmed = false;
+let warming: Promise<boolean> | null = null;
 let spawnAttempted = false;
+let keepWarmTimer: NodeJS.Timeout | null = null;
 
 interface LlmConfig {
   baseUrl: string;
@@ -48,6 +52,7 @@ async function isReachable(timeoutMs: number): Promise<boolean> {
     const response = await fetch(`${cfg.baseUrl}/models`, { signal: controller.signal, headers: authHeaders(cfg) });
     return response.ok;
   } catch {
+    warmed = false;
     return false;
   } finally {
     clearTimeout(timer);
@@ -79,29 +84,40 @@ async function waitReachable(timeoutMs: number): Promise<boolean> {
   return isReachable(QUICK_TIMEOUT_MS);
 }
 
-/** Load the model into memory once so the first real turn isn't slow. Best-effort, runs in the background. */
-async function warmOnce(): Promise<void> {
-  if (warmed) return;
+/** Load/refresh the model in memory. Concurrent callers share one warm-up request. */
+async function warmModel(force = false): Promise<boolean> {
+  if (warmed && !force) return true;
+  if (warming) return warming;
   const cfg = config();
-  if (!cfg) return;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WARM_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${cfg.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders(cfg) },
-      body: JSON.stringify({ model: cfg.model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, temperature: 0 }),
-      signal: controller.signal
-    });
-    if (response.ok) {
-      warmed = true;
-      console.log(`[llm] model ready: ${cfg.model}`);
+  if (!cfg) return false;
+  warming = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WARM_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${cfg.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(cfg) },
+        body: JSON.stringify({
+          model: cfg.model,
+          messages: [{ role: "user", content: "Reply only with OK." }],
+          max_tokens: 2,
+          temperature: 0,
+          // Ollama's OpenAI-compatible endpoint accepts this extension; other providers ignore it.
+          keep_alive: process.env.LLM_KEEP_ALIVE ?? "10m"
+        }),
+        signal: controller.signal
+      });
+      warmed = response.ok;
+      if (response.ok && !force) console.log(`[llm] model ready: ${cfg.model}`);
+      return response.ok;
+    } catch {
+      warmed = false;
+      return false;
+    } finally {
+      clearTimeout(timer);
     }
-  } catch {
-    // warming is best-effort; the first real turn will load the model if this didn't.
-  } finally {
-    clearTimeout(timer);
-  }
+  })();
+  try { return await warming; } finally { warming = null; }
 }
 
 /**
@@ -111,8 +127,7 @@ async function warmOnce(): Promise<void> {
 export async function ensureLlmReady(): Promise<boolean> {
   if (!config()) return false; // rule-engine mode — nothing to start
   if (await isReachable(QUICK_TIMEOUT_MS)) {
-    void warmOnce();
-    return true;
+    return warmModel();
   }
   if (!starting) {
     starting = (async () => {
@@ -122,6 +137,18 @@ export async function ensureLlmReady(): Promise<boolean> {
   }
   const ready = await starting;
   starting = null; // allow a fresh attempt if Ollama dies again later
-  if (ready) void warmOnce();
-  return ready;
+  return ready ? warmModel() : false;
+}
+
+/** Keep the configured model resident so calls do not encounter an Ollama cold load. */
+export function startLlmKeepWarm(): void {
+  if (!config() || keepWarmTimer) return;
+  void ensureLlmReady();
+  keepWarmTimer = setInterval(() => { void warmModel(true); }, KEEP_WARM_INTERVAL_MS);
+  keepWarmTimer.unref();
+}
+
+export function stopLlmKeepWarm(): void {
+  if (keepWarmTimer) clearInterval(keepWarmTimer);
+  keepWarmTimer = null;
 }

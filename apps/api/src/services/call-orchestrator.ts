@@ -13,7 +13,7 @@ import { getLlmTurnAdapter } from "./ai/openai-compatible-adapter.ts";
 import { FREE_TEXT_SLOT_KEYS, normalizeSlotValue, slotExtractor } from "./slot-extractor.ts";
 import { safetyPolicy } from "./safety-policy.ts";
 import { bandFor, clamp01, combineConfidence, getUncertaintyThresholds, interpretConfirmation } from "./dialogue/uncertainty.ts";
-import { confirmPhrase, detectLanguage, detectLanguageCommand, repromptPhrase, resolveCallLanguage, resolveLanguageCode, retryPhrase } from "./dialogue/language.ts";
+import { acceptedPhrase, confirmPhrase, detectLanguage, detectLanguageCommand, localizedSlotPrompt, repromptPhrase, resolveCallLanguage, resolveLanguageCode, retryPhrase, switchAcknowledgmentPhrase } from "./dialogue/language.ts";
 
 interface ProcessTurnInput {
   session: CallSession;
@@ -22,6 +22,7 @@ interface ProcessTurnInput {
   nluConfidence: number;
   workflow: WorkflowDefinition;
   profile: AgentProfile;
+  history?: Array<{ role: "agent" | "caller"; text: string }>;
 }
 
 interface ProcessTurnResult {
@@ -39,6 +40,11 @@ interface BeliefState {
   attempts: Record<string, number>;
   confirmations: number;
   reprompts: number;
+}
+
+function containsUnsupportedLetterScript(text: string): boolean {
+  const supportedLetter = /[\p{Script=Latin}\p{Script=Devanagari}\p{Script=Kannada}\p{Script=Tamil}\p{Script=Malayalam}]/u;
+  return [...text].some((character) => /\p{L}/u.test(character) && !supportedLetter.test(character));
 }
 
 class CallOrchestrator {
@@ -126,7 +132,8 @@ class CallOrchestrator {
         slots: input.profile.slots,
         collected: prior.collected,
         missing: priorMissing,
-        transcript
+        transcript,
+        history: input.history ?? []
       });
       if (turn) {
         llmSlots = turn.extractedFields;
@@ -148,7 +155,20 @@ class CallOrchestrator {
     // never suddenly speaks a language we didn't switch to; deterministic phrasing fills in instead.
     if (llmReply && !switchLanguage) {
       const replyLanguage = detectLanguage(llmReply, supportedLanguages);
-      if (replyLanguage && replyLanguage.language !== input.session.language) llmReply = null;
+      // Unknown non-ASCII scripts (for example Chinese) are also invalid; detectLanguage only recognizes
+      // the Indic scripts configured by this product.
+      if ((replyLanguage && replyLanguage.language !== input.session.language) || containsUnsupportedLetterScript(llmReply)) llmReply = null;
+    }
+
+    // When switching to a non-English language, verify the LLM reply is actually in the target language's
+    // script. Some models can't write in certain scripts and produce garbage (e.g. Chinese for Malayalam).
+    // Fall back to a deterministic switch acknowledgment so the caller hears the correct language.
+    if (llmReply && switchLanguage && switchLanguage !== "en-IN") {
+      const replyLang = detectLanguage(llmReply, supportedLanguages);
+      if (!replyLang || replyLang.language !== switchLanguage) {
+        // Require the requested language rather than accepting unrelated or plain-English output.
+        llmReply = null;
+      }
     }
 
     if (llmEscalate) {
@@ -214,6 +234,11 @@ class CallOrchestrator {
 
     const missingSlots = requiredSlots.filter((slot) => !collected[slot]);
 
+    // The deterministic extractor may recognize a value (especially a spaced phone number) that the LLM
+    // omitted from extractedFields. In that case the model's reply was composed from stale missing-slot state
+    // and commonly asks for the same field again. Discard it and build the response from the reconciled state.
+    if (accepted.some((slotKey) => llmSlots[slotKey] === undefined)) llmReply = null;
+
     // (3a) Explicit confirmation takes priority — the value is held OUT of `collected` until grounded.
     if (confirmTarget) {
       belief.attempts[confirmTarget.slotKey] = (belief.attempts[confirmTarget.slotKey] ?? 0) + 1;
@@ -264,8 +289,23 @@ class CallOrchestrator {
       const readback = args.justAccepted.length === 1 && firstAccepted
         ? `Got it — ${this.labelForSlot(args.input.profile, firstAccepted)}: ${args.slotState.collected[firstAccepted] ?? ""}. `
         : args.justAccepted.length > 1 ? "Got those, thank you. " : "";
-      responseText = `${readback}${this.buildNextPrompt(args.input.profile, args.missingSlots[0])}`;
-      verbatim = readback.length > 0; // keep the readback intact; otherwise let the mock LLM phrase the prompt
+      const effectiveLanguage = args.language ?? args.input.session.language;
+      const englishPrompt = this.buildNextPrompt(args.input.profile, args.missingSlots[0]);
+      // When switching to a new language and the LLM couldn't produce a valid reply, lead with the
+      // deterministic switch acknowledgment so the caller hears the correct language immediately.
+      if (!readback && args.language) {
+        // Do not append the profile's English slot prompt to a localized acknowledgment. The next caller
+        // answer is still processed against the same missing slot, and the following model turn stays localized.
+        responseText = switchAcknowledgmentPhrase(args.language);
+        verbatim = true;
+      } else if (effectiveLanguage !== "en-IN") {
+        const acknowledgment = args.justAccepted.length > 0 ? `${acceptedPhrase(effectiveLanguage)} ` : "";
+        responseText = `${acknowledgment}${localizedSlotPrompt(effectiveLanguage, args.missingSlots[0], englishPrompt)}`;
+        verbatim = true;
+      } else {
+        responseText = `${readback}${englishPrompt}`;
+        verbatim = readback.length > 0;
+      }
     }
     const action: OrchestratorDecision["action"] = args.justAccepted.length > 0 ? "execute_task" : "respond";
     return this.buildDecision({ input: args.input, action, confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "The workflow is still collecting required fields.", promptStyle: "workflow", extractedSlots, llmText: args.llmText, verbatim, slotConfidence, uncertainty, language: args.language });

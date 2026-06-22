@@ -120,6 +120,73 @@ export function retryPhrase(language: LanguageCode): string {
   return GROUNDING[language].retry;
 }
 
+// Deterministic language-switch acknowledgments: used when the LLM fails to produce a reply in the target
+// language (e.g. outputs Chinese instead of Malayalam). The phrase acknowledges the switch and prompts the
+// caller to continue, so the conversation keeps flowing even without a valid LLM reply.
+const SWITCH_ACK: Record<LanguageCode, string> = {
+  "en-IN": "Sure, I'll continue in English.",
+  "hi-IN": "ज़रूर, मैं हिंदी में बात करता हूँ।",
+  "kn-IN": "ಖಂಡಿತ, ನಾನು ಕನ್ನಡದಲ್ಲಿ ಮಾತನಾಡುತ್ತೇನೆ.",
+  "ta-IN": "சரி, நான் தமிழில் பேசுகிறேன்.",
+  "ml-IN": "ശരി, ഞാൻ മലയാളത്തിൽ സംസാരിക്കാം."
+};
+
+export function switchAcknowledgmentPhrase(language: LanguageCode): string {
+  return SWITCH_ACK[language];
+}
+
+const ACCEPTED: Record<LanguageCode, string> = {
+  "en-IN": "Got it, thank you.",
+  "hi-IN": "ठीक है, धन्यवाद।",
+  "kn-IN": "ಸರಿ, ಧನ್ಯವಾದಗಳು.",
+  "ta-IN": "சரி, நன்றி.",
+  "ml-IN": "ശരി, നന്ദി."
+};
+
+const GENERIC_NEXT_PROMPT: Record<LanguageCode, string> = {
+  "en-IN": "Please tell me the next detail.",
+  "hi-IN": "कृपया अगली जानकारी बताइए।",
+  "kn-IN": "ದಯವಿಟ್ಟು ಮುಂದಿನ ವಿವರವನ್ನು ತಿಳಿಸಿ.",
+  "ta-IN": "தயவுசெய்து அடுத்த விவரத்தைச் சொல்லுங்கள்.",
+  "ml-IN": "ദയവായി അടുത്ത വിവരം പറയൂ."
+};
+
+const LOCALIZED_SLOT_PROMPTS: Partial<Record<LanguageCode, Record<string, string>>> = {
+  "hi-IN": {
+    caller_name: "कृपया अपना नाम बताइए।",
+    program_interest: "आप किस कोर्स या कार्यक्रम में रुचि रखते हैं?",
+    inquiry_topic: "आप किस बारे में सहायता चाहते हैं?",
+    contact_number: "फॉलो-अप के लिए आपका संपर्क नंबर क्या है?"
+  },
+  "ml-IN": {
+    caller_name: "ദയവായി നിങ്ങളുടെ പേര് പറയാമോ?",
+    program_interest: "ഏത് കോഴ്സിലോ പ്രോഗ്രാമിലോ ആണ് നിങ്ങൾക്ക് താൽപ്പര്യം?",
+    inquiry_topic: "എന്ത് കാര്യത്തിലാണ് നിങ്ങൾക്ക് സഹായം വേണ്ടത്?",
+    contact_number: "തുടർബന്ധത്തിനായി ഏത് ഫോൺ നമ്പർ ഉപയോഗിക്കണം?"
+  },
+  "kn-IN": {
+    caller_name: "ದಯವಿಟ್ಟು ನಿಮ್ಮ ಹೆಸರನ್ನು ತಿಳಿಸುವಿರಾ?",
+    program_interest: "ನೀವು ಯಾವ ಕೋರ್ಸ್ ಅಥವಾ ಕಾರ್ಯಕ್ರಮದಲ್ಲಿ ಆಸಕ್ತಿ ಹೊಂದಿದ್ದೀರಿ?",
+    inquiry_topic: "ನಿಮಗೆ ಯಾವ ವಿಷಯದಲ್ಲಿ ಸಹಾಯ ಬೇಕು?",
+    contact_number: "ಮುಂದಿನ ಸಂಪರ್ಕಕ್ಕಾಗಿ ಯಾವ ಸಂಖ್ಯೆಯನ್ನು ಬಳಸಬೇಕು?"
+  },
+  "ta-IN": {
+    caller_name: "தயவுசெய்து உங்கள் பெயரைச் சொல்ல முடியுமா?",
+    program_interest: "எந்தப் பாடநெறி அல்லது திட்டத்தில் ஆர்வமாக உள்ளீர்கள்?",
+    inquiry_topic: "எந்த விஷயத்தில் உதவி வேண்டும்?",
+    contact_number: "தொடர்புக்கு எந்த எண்ணைப் பயன்படுத்தலாம்?"
+  }
+};
+
+export function acceptedPhrase(language: LanguageCode): string {
+  return ACCEPTED[language];
+}
+
+export function localizedSlotPrompt(language: LanguageCode, slotKey: string | undefined, englishFallback: string): string {
+  if (language === "en-IN") return englishFallback;
+  return (slotKey ? LOCALIZED_SLOT_PROMPTS[language]?.[slotKey] : undefined) ?? GENERIC_NEXT_PROMPT[language];
+}
+
 const CODE_ALIASES: Array<{ code: LanguageCode; names: string[] }> = [
   { code: "en-IN", names: ["en", "english"] },
   { code: "hi-IN", names: ["hi", "hindi"] },
@@ -169,9 +236,9 @@ export function detectLanguageCommand(transcript: string, supported: LanguageCod
 }
 
 /**
- * Resolve the language for this turn conservatively. English is the safe default; we only switch AWAY from English
- * when there is real non-English evidence (native script or romanized keywords), so an over-eager LLM guess on plain
- * English text (e.g. "I am Arvind") never hijacks the call. An explicit command or native script always wins.
+ * Resolve the language for this turn conservatively. An explicit command or native script always wins.
+ * With no language evidence, retain the session language: short answers and names are commonly written in Latin
+ * characters even after a caller explicitly selected Hindi/Malayalam, and must not silently reset the call to English.
  */
 export function resolveCallLanguage(opts: {
   current: LanguageCode;
@@ -185,8 +252,8 @@ export function resolveCallLanguage(opts: {
   if (opts.heuristic?.source === "script") return opts.heuristic.language;
   const looksNonEnglish = /[-￿]/.test(opts.transcript) || opts.heuristic !== null;
   if (looksNonEnglish) return opts.heuristic?.language ?? opts.llm ?? opts.current;
-  // Plain ASCII English with no non-English markers: default to English (reverting if we had switched).
-  return opts.supported.includes("en-IN") ? "en-IN" : opts.current;
+  // No evidence of a new language: keep the caller's explicit/session choice.
+  return opts.current;
 }
 
 /** Map a free-form language label the LLM might return ("Malayalam", "ml", "ml-IN") to a supported LanguageCode. */
