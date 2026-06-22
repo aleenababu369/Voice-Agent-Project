@@ -62,12 +62,10 @@ export function registerCallSocketRoutes(app: FastifyInstance) {
           return;
         }
         send(socket, { type: "joined", role, session });
-        // When the prospect answers an outbound (or starts an inbound) call, the agent greets and asks for consent.
+        // Don't send the welcome message here on join — it will be combined with the first slot
+        // prompt and sent as a single utterance when consent is granted, so TTS doesn't cancel it.
         if (role === "softphone") {
-          const profile = session.agentProfileId ? agentProfileService.get(session.agentProfileId, session.tenantId) : null;
-          if (profile) {
-            send(socket, { type: "agent_reply", reply: profile.welcomeMessage, needsConsent: !session.consentCaptured });
-          }
+          send(socket, { type: "ready", needsConsent: !session.consentCaptured });
         }
       });
 
@@ -88,10 +86,17 @@ export function registerCallSocketRoutes(app: FastifyInstance) {
           session = (await persistenceService.captureConsent(sessionId, message.granted !== false)) ?? session;
           broadcast(room, { type: "session_update", session });
           if (session.consentCaptured) {
-            const firstSlot = profile.slots.find((slot) => slot.required && !session!.slotState.collected[slot.key]);
-            broadcast(room, { type: "agent_reply", reply: firstSlot?.prompt ?? "How can I help you today?", needsConsent: false });
+            const profile2 = session.agentProfileId ? agentProfileService.get(session.agentProfileId, session.tenantId) : null;
+            const firstSlot = profile2?.slots.find((slot) => slot.required && !session!.slotState.collected[slot.key]);
+            // Combine the welcome message and the first slot prompt into a single utterance so TTS
+            // speaks them together without one cancelling the other.
+            const welcome = profile2?.welcomeMessage ?? "";
+            const slotPrompt = firstSlot?.prompt ?? "How can I help you today?";
+            const combined = welcome ? `${welcome} ${slotPrompt}` : slotPrompt;
+            broadcast(room, { type: "agent_reply", reply: combined, needsConsent: false });
           } else {
-            broadcast(room, { type: "agent_reply", reply: profile.escalationMessage, done: true });
+            const profile2 = session.agentProfileId ? agentProfileService.get(session.agentProfileId, session.tenantId) : null;
+            broadcast(room, { type: "agent_reply", reply: profile2?.escalationMessage ?? "Goodbye.", done: true });
           }
           return;
         }
@@ -104,8 +109,20 @@ export function registerCallSocketRoutes(app: FastifyInstance) {
           // The softphone sends the browser's speech-recognition confidence so the agent can reason about uncertainty.
           const asrConfidence = typeof message.asrConfidence === "number" && message.asrConfidence > 0 ? Math.min(1, message.asrConfidence) : undefined;
           const result = await processCallTurn({ session, profile, transcript: message.text, ...(asrConfidence !== undefined ? { asrConfidence } : {}) });
-          const done = result.decision.action === "complete_call" || result.decision.action === "escalate_to_human";
-          broadcast(room, { type: "agent_reply", reply: result.decision.responseText, decision: result.decision, session: result.session, operation: result.operation, done });
+          const isComplete = result.decision.action === "complete_call";
+          const isEscalation = result.decision.action === "escalate_to_human";
+
+          if (isComplete) {
+            // Send the farewell/completion message with done:false so TTS speaks it fully.
+            broadcast(room, { type: "agent_reply", reply: result.decision.responseText, decision: result.decision, session: result.session, operation: result.operation, done: false });
+            // After a delay (enough for TTS to finish the farewell), send the ended signal.
+            setTimeout(() => {
+              broadcast(room, { type: "ended" });
+            }, 5000);
+          } else {
+            const done = isEscalation;
+            broadcast(room, { type: "agent_reply", reply: result.decision.responseText, decision: result.decision, session: result.session, operation: result.operation, done });
+          }
           return;
         }
 

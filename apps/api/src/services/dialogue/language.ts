@@ -34,10 +34,10 @@ const SCRIPTS: ScriptRange[] = [
 
 // Distinctive romanized (Latin-script) words per language. Kept conservative to avoid switching on English.
 const ROMAN_KEYWORDS: Array<{ code: LanguageCode; pattern: RegExp }> = [
-  { code: "ml-IN", pattern: /\b(njan|ente|enikku|enikk|aanu|veno|venam|undu|cheyy|sheri|pere|peru|alla)\b/gi },
-  { code: "hi-IN", pattern: /\b(mera|naam|hai|kya|nahi|nahin|haan|chahiye|mujhe|hoon|aap|kaise|theek)\b/gi },
-  { code: "kn-IN", pattern: /\b(nanna|hesaru|beku|beda|maadi|hege|illa|namaskara|chennagide)\b/gi },
-  { code: "ta-IN", pattern: /\b(enaku|enakku|peyar|illai|venum|irukku|epdi|enna|nandri|seri)\b/gi }
+  { code: "ml-IN", pattern: /\b(njan|ente|enikku|enikk|aanu|veno|venam|undu|cheyy|sheri|pere|peru|alla|samsarikk|samsarikkamo|samsarichu|samsarikkan|parayamo|parayo|parayoo|paranju|parayuka|malayalathil|malayalath|engane|enthu|ningal|ningalkku|athu|avar|ivide|evide|ariyamo|ariyilla|mathi|pore|kollam|adipoli|aaranu|enthanu|onnu|randu|orennam|vendaam|pinne|eppol|ini|angane|ingane|evideyanu)\b/gi },
+  { code: "hi-IN", pattern: /\b(mera|naam|hai|kya|nahi|nahin|haan|chahiye|mujhe|hoon|aap|kaise|theek|boliye|bataiye|batao|samajh|samjha|suniye|suno|accha|bilkul|zaroor|dhanyavaad|shukriya|namaste|ji|sahab|madam|dijiye|karo|kariye|hindime|hindi\s?me|hindi\s?mein)\b/gi },
+  { code: "kn-IN", pattern: /\b(nanna|hesaru|beku|beda|maadi|hege|illa|namaskara|chennagide|kannadalli|kannadada|helthini|heli|heliri|barthini|gottu|gottilla|haudi|swalpa|yenu|yelli|yaaru|idu|adu|naanu|neevu|aaguttha|hogi|banni)\b/gi },
+  { code: "ta-IN", pattern: /\b(enaku|enakku|peyar|illai|venum|irukku|epdi|enna|nandri|seri|sollunga|sollungo|sollu|pesunga|pesu|puriyala|puriyuthu|tamilile|tamilil|tamilla|vanakkam|naan|neenga|ange|inge|enna|ethu|yaar|evalavu|eppothu|konjam|romba)\b/gi }
 ];
 
 export interface LanguageDetection {
@@ -136,15 +136,35 @@ const FULL_LANGUAGE_NAMES: Array<{ code: LanguageCode; name: string }> = [
   { code: "ml-IN", name: "malayalam" }
 ];
 
-/** Detect an explicit caller request like "switch to English" / "speak in Hindi" / "talk in Tamil". */
+// In-language speech-verb patterns: the caller asks to switch using their own language, not English.
+// e.g. "malayalathil samsarikkamo" (Malayalam), "hindi me boliye" (Hindi), "kannadalli heliri" (Kannada), "tamilile pesunga" (Tamil).
+const IN_LANGUAGE_REQUESTS: Array<{ code: LanguageCode; namePattern: RegExp; verbPattern: RegExp }> = [
+  { code: "ml-IN", namePattern: /\b(malayal\w*)\b/i, verbPattern: /\b(samsarikk\w*|paray\w*|paranj\w*)\b/i },
+  { code: "hi-IN", namePattern: /\b(hindi\w*)\b/i, verbPattern: /\b(bol\w*|bata\w*|sun\w*|kah\w*)\b/i },
+  { code: "kn-IN", namePattern: /\b(kannad\w*)\b/i, verbPattern: /\b(hel\w*|maad\w*|bann\w*)\b/i },
+  { code: "ta-IN", namePattern: /\b(tamil\w*)\b/i, verbPattern: /\b(pesu\w*|sollu\w*|sollung\w*)\b/i }
+];
+
+/** Detect an explicit caller request like "switch to English" / "speak in Hindi" / "talk in Tamil" / "malayalathil samsarikkamo". */
 export function detectLanguageCommand(transcript: string, supported: LanguageCode[]): LanguageCode | null {
   const lower = transcript.toLowerCase();
-  const hasVerb = /\b(switch|change|talk|speak|reply|respond|continue|say it|do it)\b/.test(lower) || /\bin\s+(english|hindi|kannada|tamil|malayalam)\b/.test(lower);
-  if (!hasVerb) return null;
   const allow = new Set(supported);
-  for (const entry of FULL_LANGUAGE_NAMES) {
-    if (allow.has(entry.code) && new RegExp(`\\b${entry.name}\\b`).test(lower)) return entry.code;
+
+  // English-style commands: "speak in Malayalam", "switch to Hindi", "talk in Tamil"
+  const hasVerb = /\b(switch|change|talk|speak|reply|respond|continue|say it|do it)\b/.test(lower) || /\bin\s+(english|hindi|kannada|tamil|malayalam)\b/.test(lower);
+  if (hasVerb) {
+    for (const entry of FULL_LANGUAGE_NAMES) {
+      if (allow.has(entry.code) && new RegExp(`\\b${entry.name}\\b`).test(lower)) return entry.code;
+    }
   }
+
+  // In-language requests: the caller uses their own language's word for "speak" + the language name.
+  // e.g. "malayalathil samsarikkamo?", "hindi me boliye", "kannadalli heliri", "tamilile pesunga"
+  for (const entry of IN_LANGUAGE_REQUESTS) {
+    if (!allow.has(entry.code)) continue;
+    if (entry.namePattern.test(lower) && entry.verbPattern.test(lower)) return entry.code;
+  }
+
   return null;
 }
 

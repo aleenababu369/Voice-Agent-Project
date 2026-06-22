@@ -37,6 +37,7 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
     "- action = \"complete\" only when every required field is collected. Otherwise \"collect\".",
     "- action = \"escalate\" if the caller asks for a human or there is a safety concern.",
     "- confidence is your 0..1 certainty in understanding the caller overall.",
+    "- For phone number or contact number fields, the value MUST be a complete 10-digit Indian mobile number. If the caller gives fewer than 10 digits, do NOT put it in extractedFields \u2014 instead ask them to provide the full number. Never read a phone number as a large number (lakhs, crores); always read it digit by digit.",
     "- reply is what you SAY next to the caller (short, spoken style)."
   ].join("\n");
 }
