@@ -9,6 +9,7 @@ import type {
   CallDetailDto,
   CampaignDto,
   FollowUpStatusDto,
+  KnowledgeItemDto,
   OperationDto,
   OperationStatusDto,
   PlatformAnalyticsDto,
@@ -52,6 +53,7 @@ interface PlatformState {
   prospectDetail: { prospect: ProspectDto; sessions: SessionRecordDto[]; operations: OperationDto[] } | null;
   campaigns: CampaignDto[];
   campaignDetail: { campaign: CampaignDto; prospects: ProspectDto[] } | null;
+  knowledge: KnowledgeItemDto[];
   callDetail: CallDetailDto | null;
   analytics: PlatformAnalyticsDto | null;
   dailyReport: TenantDailyReportDto | null;
@@ -74,6 +76,7 @@ const initialState: PlatformState = {
   prospectDetail: null,
   campaigns: [],
   campaignDetail: null,
+  knowledge: [],
   callDetail: null,
   analytics: null,
   dailyReport: null,
@@ -261,6 +264,35 @@ export const fetchDailyReport = createAsyncThunk("platform/fetchDailyReport", as
   return response.data;
 });
 
+// ---- Knowledge base ----
+export const fetchKnowledge = createAsyncThunk("platform/fetchKnowledge", async (_, { getState }) => {
+  const response = await client(getState() as RootState).get<{ items: KnowledgeItemDto[] }>("/v1/knowledge");
+  return response.data.items;
+});
+
+export const saveKnowledge = createAsyncThunk("platform/saveKnowledge", async (input: { id?: string; kind: string; name: string; aliases: string[]; active: boolean; details: Record<string, string | string[]> }, { getState, dispatch, rejectWithValue }) => {
+  const api = client(getState() as RootState);
+  try {
+    if (input.id) await api.put(`/v1/knowledge/${input.id}`, input);
+    else await api.post("/v1/knowledge", input);
+    await dispatch(fetchKnowledge());
+    return true;
+  } catch (error) {
+    return rejectWithValue(extractError(error, "Unable to save knowledge entry."));
+  }
+});
+
+export const deleteKnowledge = createAsyncThunk("platform/deleteKnowledge", async (id: string, { getState, dispatch, rejectWithValue }) => {
+  const api = client(getState() as RootState);
+  try {
+    await api.delete(`/v1/knowledge/${id}`);
+    await dispatch(fetchKnowledge());
+    return true;
+  } catch (error) {
+    return rejectWithValue(extractError(error, "Unable to delete entry."));
+  }
+});
+
 const platformSlice = createSlice({
   name: "platform",
   initialState,
@@ -310,6 +342,11 @@ const platformSlice = createSlice({
       .addCase(fetchCampaigns.fulfilled, (state, action) => { state.campaigns = action.payload; })
       .addCase(createCampaign.rejected, (state, action) => { state.error = (action.payload as string) ?? "Unable to create campaign."; })
       .addCase(fetchCampaignDetail.fulfilled, (state, action) => { state.campaignDetail = action.payload; })
+      .addCase(fetchKnowledge.fulfilled, (state, action) => { state.knowledge = action.payload; })
+      .addCase(saveKnowledge.fulfilled, (state) => { state.notice = "Knowledge base updated."; })
+      .addCase(saveKnowledge.rejected, (state, action) => { state.error = (action.payload as string) ?? "Unable to save knowledge entry."; })
+      .addCase(deleteKnowledge.fulfilled, (state) => { state.notice = "Entry removed."; })
+      .addCase(deleteKnowledge.rejected, (state, action) => { state.error = (action.payload as string) ?? "Unable to delete entry."; })
       .addCase(fetchAnalytics.fulfilled, (state, action) => { state.analytics = action.payload; })
       .addCase(fetchDailyReport.fulfilled, (state, action) => { state.dailyReport = action.payload; })
       .addCase(updateSessionFollowUp.rejected, (state, action) => { state.error = (action.payload as string) ?? "Unable to update follow-up."; })

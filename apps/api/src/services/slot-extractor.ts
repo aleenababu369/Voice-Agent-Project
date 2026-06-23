@@ -27,6 +27,15 @@ function assembleSpelledOut(value: string): string {
   return value;
 }
 
+function normalizeIndianMobile(raw: string): string {
+  const digitsOnly = raw.replace(/[^\d]/g, "");
+  if (!digitsOnly) return "";
+  if (/^[6-9]\d{9}$/.test(digitsOnly)) return digitsOnly;
+  if (/^0[6-9]\d{9}$/.test(digitsOnly)) return digitsOnly.slice(1);
+  if (/^91[6-9]\d{9}$/.test(digitsOnly)) return digitsOnly.slice(2);
+  return "";
+}
+
 /**
  * Pull the clean value out of a spoken phrase so the agent confirms/stores "Leena", not "my name is Leena".
  * Strips conversational lead-ins for every field, assembles spelled-out words, and drops trailing clauses
@@ -44,12 +53,8 @@ export function normalizeSlotValue(key: string, raw: string): string {
   value = value.replace(/^[\s,."'?!-]+|[\s,."'?!-]+$/g, "").trim();
   // Phone/contact fields: only accept a complete 10-digit Indian mobile number.
   if (PHONE_SLOT_KEYS.has(key)) {
-    const digitsOnly = value.replace(/[^\d]/g, "");
-    // Strip leading country code "91" if present so we count the actual mobile digits.
-    const mobile = digitsOnly.startsWith("91") && digitsOnly.length > 10 ? digitsOnly.slice(2) : digitsOnly;
-    if (mobile.length < 10) return ""; // incomplete — force re-prompt
-    // Return the clean 10-digit number (no spaces/dashes).
-    value = mobile.slice(0, 10);
+    value = normalizeIndianMobile(value);
+    if (!value) return ""; // incomplete or malformed — force re-prompt
   }
   return value || original;
 }
@@ -104,7 +109,7 @@ class SlotExtractor {
     const bareContactMatch = transcript.match(/(?:^|\s)(\+?\d(?:[\d -]*\d)?)(?:\s|$)/);
     const bareContact = bareContactMatch?.[1];
     const contactCandidate = contactMatch?.[1] ?? ((bareContact?.replace(/\D/g, "").length ?? 0) >= 10 ? bareContact : undefined);
-    const doctorMatch = transcript.match(/\b(?:doctor|dr\.?|department)\s*[:#-]?\s*([a-zA-Z ]{2,})\b/i);
+    const doctorMatch = transcript.match(/\b(?:doctor|dr\.?|department)\s*[:#-]?\s*([a-zA-Z ]{2,}?)(?=\s+(?:tomorrow|today|on|at|\d{1,2}(?::\d{2})?\s?(?:am|pm)|available|consultation|appointment)\b|$)/i);
 
     if (keys.includes("patient_name")) set("patient_name", nameMatch?.[1], SCORE.loose);
     if (keys.includes("visitor_name")) set("visitor_name", nameMatch?.[1], SCORE.loose);
@@ -127,12 +132,13 @@ class SlotExtractor {
     if (keys.includes("confirmation_status") && /(no|cannot|can't attend|not available|nahi|baralla)/i.test(lowered)) set("confirmation_status", "not_confirmed", SCORE.moderate);
 
     if (keys.includes("department")) {
-      const departmentMatch = transcript.match(/\b(?:department|team|office)\s*[:#-]?\s*([a-zA-Z ]{2,})\b/i);
+      const departmentMatch = transcript.match(/\b(?:department|team|office)\s*[:#-]?\s*([a-zA-Z ]{2,}?)(?=\s+(?:callback|number|contact|phone)\b|$)/i);
       set("department", departmentMatch?.[1], SCORE.loose);
     }
 
     if (keys.includes("program_interest")) {
-      const programMatch = transcript.match(/\b(?:program|course|admission for|interested in)\s*[:#-]?\s*([a-zA-Z .&-]{2,})\b/i);
+      const programMatch = transcript.match(/\b(?:program|course|admission for|interested in|looking for|want admission for|seeking)\s*[:#-]?\s*([a-zA-Z0-9 .&-]{2,}?)(?=\s+(?:inquiry|enquiry|about|regarding|fees|admission|hostel|contact|number|phone)\b|$)/i)
+        ?? transcript.match(/\b(b\.?\s?tech|m\.?\s?tech|mba|bba|bca|mca|mbbs|bds|bcom|mcom|pharmacy|nursing)\b/i);
       set("program_interest", programMatch?.[1], SCORE.loose);
     }
 

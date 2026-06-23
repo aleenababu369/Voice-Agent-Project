@@ -5,6 +5,7 @@ import { registerCallRoutes } from "./routes/calls.ts";
 import { registerCallSocketRoutes } from "./routes/call-socket.ts";
 import { registerCampaignRoutes } from "./routes/campaigns.ts";
 import { registerDemoRoutes } from "./routes/demo.ts";
+import { registerKnowledgeRoutes } from "./routes/knowledge.ts";
 import { registerProspectRoutes } from "./routes/prospects.ts";
 import { registerSystemRoutes } from "./routes/system.ts";
 import { registerAuth } from "./plugins/auth.middleware.ts";
@@ -14,6 +15,7 @@ import { callOrchestrator } from "./services/call-orchestrator.ts";
 import { persistenceService } from "./services/persistence.service.ts";
 import { workflowRegistry } from "./services/workflow-registry.ts";
 import { stopLlmKeepWarm } from "./services/ai/llm-runtime.ts";
+import { knowledgeLookupService } from "./services/knowledge-lookup.service.ts";
 
 export function buildApp() {
   const app = Fastify({ logger: false });
@@ -62,6 +64,7 @@ export function buildApp() {
   registerCallSocketRoutes(app);
   registerProspectRoutes(app);
   registerCampaignRoutes(app);
+  registerKnowledgeRoutes(app);
   registerDemoRoutes(app);
   return app;
 }
@@ -70,6 +73,11 @@ export function buildApp() {
 export async function initServices() {
   await authService.hydrate();
   await agentProfileService.hydrate();
+  await Promise.all([
+    knowledgeLookupService.ensureTenant("city-hospital", "healthcare"),
+    knowledgeLookupService.ensureTenant("greenfield-college", "education"),
+    knowledgeLookupService.ensureTenant("northstar-frontdesk", "frontdesk")
+  ]);
 }
 
 declare module "fastify" {

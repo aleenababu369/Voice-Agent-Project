@@ -39,6 +39,8 @@ export interface LlmAdapter {
 export interface LlmTurnRequest {
   systemPrompt: string;
   welcomeMessage: string;
+  domain: CallSession["domain"];
+  workflow: CallSession["workflow"];
   language: CallSession["language"];
   /** Languages the agent can serve; the model may switch its reply to whichever of these the caller speaks. */
   supportedLanguages?: CallSession["language"][];
@@ -47,6 +49,8 @@ export interface LlmTurnRequest {
   missing: string[];
   transcript: string;
   history?: Array<{ role: "agent" | "caller"; text: string }>;
+  /** Current facts returned by the tenant's operational database for this utterance. */
+  knowledge?: { handled: boolean; facts: string[]; fallbackText: string };
 }
 
 export interface LlmTurnResult {

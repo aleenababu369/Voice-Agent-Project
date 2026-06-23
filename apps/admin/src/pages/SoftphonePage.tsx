@@ -36,6 +36,7 @@ const NOISE_CONFIDENCE_FLOOR = 0.3;
 // acoustic tail of the speaker), and how long after that to keep rejecting any echo of the agent's words.
 const TTS_TAIL_MS = 450;
 const TTS_ECHO_GUARD_MS = 2200;
+const PHONE_SETTLE_MS = 1400;
 // Voice-activity detection for the Whisper recording path: speech level, end-of-utterance silence, min length.
 const VAD_SPEAK_LEVEL = 0.025;
 const VAD_SILENCE_MS = 900;
@@ -55,6 +56,37 @@ function wordsOf(text: string): string[] {
   // Keep letters and numbers from every script. The previous ASCII-only cleanup turned
   // Hindi/Malayalam/etc. into an empty string, so valid native-script speech was discarded as noise.
   return text.toLocaleLowerCase().match(/[\p{L}\p{N}\p{M}]+/gu) ?? [];
+}
+
+function digitsOf(text: string): string {
+  return text.replace(/[^\d]/g, "");
+}
+
+function looksLikePhoneUtterance(text: string): boolean {
+  const compact = text.replace(/\s+/g, "");
+  const digits = digitsOf(text);
+  if (digits.length < 7) return false;
+  return /\b(phone|number|contact|callback|mobile)\b/i.test(text) || (compact.length > 0 && digits.length / compact.length >= 0.5);
+}
+
+function mergeUtterances(previous: string, next: string): string {
+  if (!previous) return next.trim();
+  if (!next) return previous.trim();
+  const prevDigits = digitsOf(previous);
+  const nextDigits = digitsOf(next);
+  if (prevDigits && nextDigits) {
+    if (nextDigits.includes(prevDigits)) return next.trim();
+    if (prevDigits.includes(nextDigits)) return previous.trim();
+  }
+  return `${previous} ${next}`.replace(/\s{2,}/g, " ").trim();
+}
+
+/** Make the browser read long digit runs (phone numbers) one digit at a time, not as a huge cardinal number. */
+function formatForSpeech(text: string): string {
+  return text.replace(/\d[\d\s-]{5,}\d/g, (run) => {
+    const digits = run.replace(/\D/g, "");
+    return digits.length >= 7 && digits.length <= 13 ? digits.split("").join(" ") : run;
+  });
 }
 
 /** Strip recognizer noise artifacts and filler so only meaningful speech reaches the agent and the LLM. */
@@ -119,7 +151,11 @@ export function SoftphonePage() {
 
   const recognitionRef = useRef<RecognitionInstance | null>(null);
   const recognitionRunningRef = useRef(false);
+  // Agent replies are SPOKEN through a queue so the opening greeting and the first question (which arrive as two
+  // back-to-back messages) are both heard in order, instead of the second cancelling the first mid-sentence.
   const lastSpokenIdRef = useRef(0);
+  const speechQueueRef = useRef<string[]>([]);
+  const pumpRef = useRef<() => void>(() => {});
   const answeredRef = useRef(false);
   const mutedRef = useRef(false);
   const doneRef = useRef(false);
@@ -131,6 +167,10 @@ export function SoftphonePage() {
   const autoAnsweredRef = useRef(false);
   const micStreamRef = useRef<MediaStream | null>(null);
   const sendRef = useRef(call.sendUtterance);
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const pendingUtteranceRef = useRef("");
+  const pendingUtteranceConfidenceRef = useRef(0);
+  const pendingUtteranceTimerRef = useRef<number | null>(null);
 
   useEffect(() => { answeredRef.current = answered; }, [answered]);
   useEffect(() => { mutedRef.current = muted; }, [muted]);
@@ -139,6 +179,12 @@ export function SoftphonePage() {
   useEffect(() => { doneRef.current = call.done; sendRef.current = call.sendUtterance; }, [call.done, call.sendUtterance]);
   useEffect(() => { if (call.done) setPhase("ended"); }, [call.done]);
   useEffect(() => { if (call.connected && phase === "connecting") setPhase("ringing"); }, [call.connected, phase]);
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [call.messages]);
+  useEffect(() => () => {
+    if (pendingUtteranceTimerRef.current) window.clearTimeout(pendingUtteranceTimerRef.current);
+  }, []);
 
   // Ask the backend whether a Whisper ASR server is configured; if so we record + transcribe server-side.
   useEffect(() => {
@@ -168,13 +214,15 @@ export function SoftphonePage() {
     const finish = () => {
       ttsActiveRef.current = false;
       ttsEndedAtRef.current = Date.now();
+      // More agent sentences queued (e.g. greeting then first question)? Speak the next before reopening the mic.
+      if (speechQueueRef.current.length > 0) { pumpRef.current(); return; }
       // Keep agentTextRef set: the echo guard below still rejects the agent's words for a short window.
       if (!doneRef.current) setPhase(answeredRef.current ? "listening" : "ringing");
       window.setTimeout(() => ensureListening(), TTS_TAIL_MS); // reopen the mic after the speaker's acoustic tail clears
     };
     if (typeof window === "undefined" || !("speechSynthesis" in window)) { finish(); return; }
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    const utterance = new SpeechSynthesisUtterance(formatForSpeech(text));
     utterance.lang = language;
     let handled = false;
     const proceed = () => { if (handled) return; handled = true; finish(); };
@@ -184,6 +232,55 @@ export function SoftphonePage() {
     // Barge-in (opt-in): keep the mic hot while the agent talks so the user can cut in.
     if (bargeInRef.current) ensureListening();
   }, [language, ensureListening]);
+
+  // Drain the agent-speech queue one utterance at a time so consecutive replies never talk over each other.
+  const pumpQueue = useCallback(() => {
+    if (ttsActiveRef.current) return;
+    const next = speechQueueRef.current.shift();
+    if (next === undefined) return;
+    speak(next);
+  }, [speak]);
+  useEffect(() => { pumpRef.current = pumpQueue; }, [pumpQueue]);
+
+  const clearQueuedUtterance = useCallback(() => {
+    if (pendingUtteranceTimerRef.current) window.clearTimeout(pendingUtteranceTimerRef.current);
+    pendingUtteranceTimerRef.current = null;
+    pendingUtteranceRef.current = "";
+    pendingUtteranceConfidenceRef.current = 0;
+  }, []);
+
+  const flushQueuedUtterance = useCallback(() => {
+    const text = pendingUtteranceRef.current.trim();
+    const confidence = pendingUtteranceConfidenceRef.current;
+    clearQueuedUtterance();
+    if (!text) return;
+    setPhase("thinking");
+    sendRef.current(text, confidence);
+  }, [clearQueuedUtterance]);
+
+  const queueUtterance = useCallback((text: string, confidence: number) => {
+    const phoneLike = looksLikePhoneUtterance(text);
+    const hasPending = pendingUtteranceRef.current.trim().length > 0;
+
+    if (!phoneLike && !hasPending) {
+      setPhase("thinking");
+      sendRef.current(text, confidence);
+      return;
+    }
+
+    if (hasPending && !phoneLike) {
+      flushQueuedUtterance();
+      setPhase("thinking");
+      sendRef.current(text, confidence);
+      return;
+    }
+
+    pendingUtteranceRef.current = mergeUtterances(pendingUtteranceRef.current, text);
+    pendingUtteranceConfidenceRef.current = Math.max(pendingUtteranceConfidenceRef.current, confidence);
+    if (pendingUtteranceTimerRef.current) window.clearTimeout(pendingUtteranceTimerRef.current);
+    pendingUtteranceTimerRef.current = window.setTimeout(() => flushQueuedUtterance(), PHONE_SETTLE_MS);
+    if (!doneRef.current && answeredRef.current) setPhase("listening");
+  }, [flushQueuedUtterance]);
 
   // Dialed inbound call: the agent answers automatically (the caller already initiated by dialing).
   useEffect(() => {
@@ -258,6 +355,7 @@ export function SoftphonePage() {
           && !isEcho(candidate, agentTextRef.current);
         if (looksLikeUser) {
           try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+          speechQueueRef.current = []; // user cut in — drop any unspoken queued agent sentences
           ttsActiveRef.current = false;
           agentTextRef.current = "";
           setPhase("listening");
@@ -278,8 +376,7 @@ export function SoftphonePage() {
           if (!doneRef.current && answeredRef.current) setPhase("listening");
           return;
         }
-        setPhase("thinking");
-        sendRef.current(candidate, finalConfidence);
+        queueUtterance(candidate, finalConfidence);
       }
     };
     recognition.onerror = (event) => {
@@ -335,8 +432,7 @@ export function SoftphonePage() {
         if (!text || isNoise(text, confidence)) { backToListening(); return; }
         // Reject the agent's own voice if it bled into the recording just after it spoke.
         if (Date.now() - ttsEndedAtRef.current < TTS_ECHO_GUARD_MS && isEcho(text, agentTextRef.current)) { backToListening(); return; }
-        setPhase("thinking");
-        sendRef.current(text, confidence);
+        queueUtterance(text, confidence);
       } catch { backToListening(); }
     };
 
@@ -401,16 +497,18 @@ export function SoftphonePage() {
     };
   }, [whisperEnabled, baseUrl, language]);
 
-  // When a new agent message arrives, speak it.
+  // Enqueue every new agent message in order and start speaking — so the opening greeting AND the first
+  // question are both heard, instead of the second reply cancelling the first.
   useEffect(() => {
-    let lastAgent: { id: number; text: string } | undefined;
-    for (let i = call.messages.length - 1; i >= 0; i -= 1) {
-      if (call.messages[i].role === "agent") { lastAgent = call.messages[i]; break; }
+    let enqueued = false;
+    for (const message of call.messages) {
+      if (message.role !== "agent" || message.id <= lastSpokenIdRef.current) continue;
+      lastSpokenIdRef.current = message.id;
+      speechQueueRef.current.push(message.text);
+      enqueued = true;
     }
-    if (!lastAgent || lastAgent.id === lastSpokenIdRef.current) return;
-    lastSpokenIdRef.current = lastAgent.id;
-    speak(lastAgent.text);
-  }, [call.messages, speak]);
+    if (enqueued) pumpQueue();
+  }, [call.messages, pumpQueue]);
 
   function answerCall() {
     setAnswered(true);
@@ -429,6 +527,8 @@ export function SoftphonePage() {
 
   function sendTyped() {
     if (!input.trim()) return;
+    clearQueuedUtterance();
+    speechQueueRef.current = [];
     try { recognitionRef.current?.abort(); } catch { /* ignore */ }
     try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
     ttsActiveRef.current = false;
@@ -438,6 +538,8 @@ export function SoftphonePage() {
   }
 
   function hangUp() {
+    clearQueuedUtterance();
+    speechQueueRef.current = [];
     try { recognitionRef.current?.abort(); } catch { /* ignore */ }
     if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
     call.end();
@@ -503,6 +605,7 @@ export function SoftphonePage() {
                   {message.text}
                 </div>
               ))}
+              <div ref={transcriptEndRef} />
             </div>
 
             {call.done ? (

@@ -13,7 +13,8 @@ import { getLlmTurnAdapter } from "./ai/openai-compatible-adapter.ts";
 import { FREE_TEXT_SLOT_KEYS, normalizeSlotValue, slotExtractor } from "./slot-extractor.ts";
 import { safetyPolicy } from "./safety-policy.ts";
 import { bandFor, clamp01, combineConfidence, getUncertaintyThresholds, interpretConfirmation } from "./dialogue/uncertainty.ts";
-import { acceptedPhrase, confirmPhrase, detectLanguage, detectLanguageCommand, localizedSlotPrompt, repromptPhrase, resolveCallLanguage, resolveLanguageCode, retryPhrase, switchAcknowledgmentPhrase } from "./dialogue/language.ts";
+import { acceptedPhrase, bookingOptionPhrase, completionPhrase, confirmPhrase, detectLanguage, detectLanguageCommand, farewellPhrase, localizedSlotPrompt, repromptPhrase, resolveCallLanguage, resolveLanguageCode, retryPhrase, switchAcknowledgmentPhrase } from "./dialogue/language.ts";
+import { knowledgeLookupService, type KnowledgeRecordKind } from "./knowledge-lookup.service.ts";
 
 interface ProcessTurnInput {
   session: CallSession;
@@ -86,6 +87,28 @@ class CallOrchestrator {
       reprompts: prior.reprompts ?? 0
     };
 
+    // A language request is a control command, never workflow data. Handling it before confirmation and
+    // extraction prevents phrases such as "speak with me in Malayalam" becoming the enquiry topic.
+    if (languageCommand) {
+      const englishPrompt = this.buildNextPrompt(input.profile, prior.missing[0]);
+      const nextPrompt = localizedSlotPrompt(languageCommand, prior.missing[0], englishPrompt);
+      const responseText = prior.missing.length > 0
+        ? `${switchAcknowledgmentPhrase(languageCommand)} ${nextPrompt}`
+        : switchAcknowledgmentPhrase(languageCommand);
+      return this.buildDecision({
+        input,
+        action: "respond",
+        confidence,
+        slotState: prior,
+        missingSlots: prior.missing,
+        responseText,
+        reason: `Caller explicitly requested ${languageCommand}.`,
+        promptStyle: "workflow",
+        verbatim: true,
+        language: languageCommand !== input.session.language ? languageCommand : undefined
+      });
+    }
+
     // (1) GROUNDING — if a medium-confidence value is awaiting an explicit yes/no, resolve that first.
     const pending = prior.pendingConfirmation;
     if (pending) {
@@ -121,19 +144,31 @@ class CallOrchestrator {
     let llmOverall = 0.85;
     let llmReply: string | null = null;
     let llmEscalate = false;
+    let llmCompleted = false;
     let llmLanguageRaw: string | undefined;
+    const knowledge = await knowledgeLookupService.lookup({
+      tenantId: input.session.tenantId,
+      domain: input.profile.domain,
+      workflow: input.profile.workflow,
+      transcript,
+      collected: prior.collected,
+      language: effectiveLanguage
+    });
     const adapter = getLlmTurnAdapter();
     if (adapter) {
       const turn = await adapter.runTurn({
         systemPrompt: input.profile.systemPrompt,
         welcomeMessage: input.profile.welcomeMessage,
+        domain: input.profile.domain,
+        workflow: input.profile.workflow,
         language: effectiveLanguage,
         supportedLanguages,
         slots: input.profile.slots,
         collected: prior.collected,
         missing: priorMissing,
         transcript,
-        history: input.history ?? []
+        history: input.history ?? [],
+        ...(knowledge.handled ? { knowledge: { handled: true, facts: knowledge.facts ?? [], fallbackText: knowledge.fallbackText ?? "I could not find a matching current record." } } : {})
       });
       if (turn) {
         llmSlots = turn.extractedFields;
@@ -141,8 +176,11 @@ class CallOrchestrator {
         llmOverall = turn.confidence;
         llmReply = turn.reply;
         llmEscalate = turn.action === "escalate";
+        llmCompleted = turn.action === "complete";
         llmLanguageRaw = turn.language;
       }
+    } else if (knowledge.handled) {
+      llmReply = knowledge.fallbackText ?? null;
     }
 
     // Resolve the final language: native script always wins; otherwise prefer the LLM's judgment, then the keyword hint.
@@ -153,22 +191,12 @@ class CallOrchestrator {
     // The model sometimes drifts into another language (e.g. replies in Hindi for an English caller because the
     // name sounds regional). If we are NOT switching, drop a reply written in a different script so the agent
     // never suddenly speaks a language we didn't switch to; deterministic phrasing fills in instead.
-    if (llmReply && !switchLanguage) {
+    if (llmReply) {
+      const expectedLanguage = switchLanguage ?? input.session.language;
       const replyLanguage = detectLanguage(llmReply, supportedLanguages);
-      // Unknown non-ASCII scripts (for example Chinese) are also invalid; detectLanguage only recognizes
-      // the Indic scripts configured by this product.
-      if ((replyLanguage && replyLanguage.language !== input.session.language) || containsUnsupportedLetterScript(llmReply)) llmReply = null;
-    }
-
-    // When switching to a non-English language, verify the LLM reply is actually in the target language's
-    // script. Some models can't write in certain scripts and produce garbage (e.g. Chinese for Malayalam).
-    // Fall back to a deterministic switch acknowledgment so the caller hears the correct language.
-    if (llmReply && switchLanguage && switchLanguage !== "en-IN") {
-      const replyLang = detectLanguage(llmReply, supportedLanguages);
-      if (!replyLang || replyLang.language !== switchLanguage) {
-        // Require the requested language rather than accepting unrelated or plain-English output.
-        llmReply = null;
-      }
+      const wrongKnownLanguage = Boolean(replyLanguage && replyLanguage.language !== expectedLanguage);
+      const missingRequestedScript = expectedLanguage !== "en-IN" && (!replyLanguage || replyLanguage.language !== expectedLanguage);
+      if (wrongKnownLanguage || missingRequestedScript || containsUnsupportedLetterScript(llmReply)) llmReply = null;
     }
 
     if (llmEscalate) {
@@ -182,6 +210,20 @@ class CallOrchestrator {
     const accepted: string[] = [];
     let confirmTarget: PendingConfirmation | null = null;
     let repromptTarget: string | null = null;
+    let bookingIssue: { slotKey: string; requested: string; alternatives: string[]; status: "unavailable" | "unknown" } | null = null;
+
+    // Let a later, more specific enquiry refine an earlier generic one ("a doctor" -> "Dr Priya today").
+    for (const slot of input.profile.slots) {
+      const existing = collected[slot.key];
+      const rawUpdate = llmSlots[slot.key];
+      if (!existing || !rawUpdate || !FREE_TEXT_SLOT_KEYS.has(slot.key)) continue;
+      const update = normalizeSlotValue(slot.key, rawUpdate);
+      if (update && update.toLowerCase() !== existing.toLowerCase() && update.length > existing.length) {
+        collected[slot.key] = update;
+        belief.confidence[slot.key] = clamp01(llmFieldConfidence[slot.key] ?? llmOverall);
+        accepted.push(slot.key);
+      }
+    }
 
     for (const slot of input.profile.slots) {
       if (collected[slot.key] !== undefined) continue;
@@ -206,6 +248,22 @@ class CallOrchestrator {
       // Reduce the spoken phrase to the clean value ("my name is Leena" -> "Leena") so the agent never parrots filler back.
       value = normalizeSlotValue(slot.key, value);
       if (!value) continue;
+      if (fromLlm && /^(?:contact|callback|phone)_?number$/.test(slot.key) && value !== String(llmValue).trim()) llmReply = null;
+
+      // Booking enforcement: validate a doctor/department/program the caller wants against the operational
+      // table. An unavailable or unknown entity is NOT booked — we re-prompt with the live alternatives so the
+      // agent never confirms something that does not exist. The loop guard lets the caller proceed eventually.
+      const bookingKinds = this.bookingKindsFor(input.profile.domain, slot.key);
+      if (bookingKinds && (belief.attempts[slot.key] ?? 0) < thresholds.maxAttempts) {
+        const check = knowledgeLookupService.checkBookingValueSync(input.session.tenantId, input.profile.domain, bookingKinds, value);
+        if (check.status !== "ok") {
+          belief.attempts[slot.key] = (belief.attempts[slot.key] ?? 0) + 1;
+          if (slot.required && !bookingIssue) bookingIssue = { slotKey: slot.key, requested: value, alternatives: check.alternatives, status: check.status };
+          llmReply = null; // the model may have falsely confirmed the unavailable option
+          continue;
+        }
+        if (check.canonicalName) value = check.canonicalName; // store the table's canonical name
+      }
 
       // When the value came from the LLM, trust the model's own certainty (it understood the meaning) and only
       // lightly factor in the browser's unreliable ASR score. Rule-extracted values lean on ASR more.
@@ -238,6 +296,16 @@ class CallOrchestrator {
     // omitted from extractedFields. In that case the model's reply was composed from stale missing-slot state
     // and commonly asks for the same field again. Discard it and build the response from the reconciled state.
     if (accepted.some((slotKey) => llmSlots[slotKey] === undefined)) llmReply = null;
+    if (missingSlots.length === 0 && !llmCompleted) llmReply = null;
+
+    // (3a-pre) A required booking value the operational table rejected takes priority over generic grounding:
+    // ask the caller to pick a valid, available option before anything else.
+    if (bookingIssue && missingSlots.includes(bookingIssue.slotKey)) {
+      const lang = switchLanguage ?? input.session.language;
+      const slotState = this.composeSlotState(requiredSlots, collected, missingSlots, belief);
+      const responseText = bookingOptionPhrase(lang, bookingIssue.status, this.labelForSlot(input.profile, bookingIssue.slotKey), bookingIssue.requested, bookingIssue.alternatives);
+      return this.buildDecision({ input, action: "ask_clarification", confidence: input.nluConfidence, slotState, missingSlots, responseText, reason: `Requested ${bookingIssue.slotKey} "${bookingIssue.requested}" is ${bookingIssue.status} per the operational table.`, promptStyle: "clarification", verbatim: true, extractedSlots: this.pick(collected, accepted), slotConfidence: belief.confidence, uncertainty: { confirmations: belief.confirmations, reprompts: belief.reprompts }, language: switchLanguage });
+    }
 
     // (3a) Explicit confirmation takes priority — the value is held OUT of `collected` until grounded.
     if (confirmTarget) {
@@ -275,8 +343,13 @@ class CallOrchestrator {
     const slotConfidence = args.slotState.confidence ?? {};
 
     if (args.missingSlots.length === 0) {
-      const responseText = args.llmText ?? this.buildCompletionMessage(args.input.profile, args.slotState.collected);
-      return this.buildDecision({ input: args.input, action: "complete_call", confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "All required workflow slots are collected.", promptStyle: "completion", extractedSlots, allSlotsCollected: true, llmText: args.llmText, slotConfidence, uncertainty, language: args.language });
+      const completionLanguage = args.language ?? args.input.session.language;
+      // Never end the call on a dangling question. If the LLM's closing line still asks something, drop it and
+      // use the deterministic summary so the caller hears a clean confirmation; always end with a warm goodbye.
+      const llmClosing = args.llmText && !/\?\s*$/.test(args.llmText.trim()) ? args.llmText : null;
+      const summary = llmClosing ?? (completionLanguage === "en-IN" ? this.buildCompletionMessage(args.input.profile, args.slotState.collected) : completionPhrase(completionLanguage));
+      const responseText = `${summary} ${farewellPhrase(completionLanguage)}`.trim();
+      return this.buildDecision({ input: args.input, action: "complete_call", confidence: args.confidence, slotState: args.slotState, missingSlots: args.missingSlots, responseText, reason: "All required workflow slots are collected.", promptStyle: "completion", extractedSlots, allSlotsCollected: true, verbatim: true, slotConfidence, uncertainty, language: args.language });
     }
 
     // Implicit confirmation: read freshly accepted values back to the caller as part of the next question.
@@ -294,9 +367,7 @@ class CallOrchestrator {
       // When switching to a new language and the LLM couldn't produce a valid reply, lead with the
       // deterministic switch acknowledgment so the caller hears the correct language immediately.
       if (!readback && args.language) {
-        // Do not append the profile's English slot prompt to a localized acknowledgment. The next caller
-        // answer is still processed against the same missing slot, and the following model turn stays localized.
-        responseText = switchAcknowledgmentPhrase(args.language);
+        responseText = `${switchAcknowledgmentPhrase(args.language)} ${localizedSlotPrompt(args.language, args.missingSlots[0], englishPrompt)}`;
         verbatim = true;
       } else if (effectiveLanguage !== "en-IN") {
         const acknowledgment = args.justAccepted.length > 0 ? `${acceptedPhrase(effectiveLanguage)} ` : "";
@@ -333,6 +404,13 @@ class CallOrchestrator {
 
   private labelForSlot(profile: AgentProfile, key: string): string {
     return profile.slots.find((slot) => slot.key === key)?.label ?? key.replace(/_/g, " ");
+  }
+
+  /** Which knowledge-table kinds a booking slot must validate against, or null when the slot is free choice. */
+  private bookingKindsFor(domain: AgentProfile["domain"], slotKey: string): KnowledgeRecordKind[] | null {
+    if (domain === "healthcare" && slotKey === "doctor_name") return ["doctor", "department"];
+    if (domain === "education" && slotKey === "program_interest") return ["program"];
+    return null;
   }
 
   private async buildDecision(args: {

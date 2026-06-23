@@ -102,8 +102,8 @@ async function warmModel(force = false): Promise<boolean> {
           messages: [{ role: "user", content: "Reply only with OK." }],
           max_tokens: 2,
           temperature: 0,
-          // Ollama's OpenAI-compatible endpoint accepts this extension; other providers ignore it.
-          keep_alive: process.env.LLM_KEEP_ALIVE ?? "10m"
+          // "-1" keeps the model resident indefinitely (Ollama extension); other providers ignore it.
+          keep_alive: process.env.LLM_KEEP_ALIVE ?? "-1"
         }),
         signal: controller.signal
       });

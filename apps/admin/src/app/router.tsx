@@ -15,6 +15,7 @@ import { CallHistoryPage } from "../pages/calls/CallHistoryPage";
 import { CallDetailPage } from "../pages/calls/CallDetailPage";
 import { OperationsListPage } from "../pages/operations/OperationsListPage";
 import { OperationDetailPage } from "../pages/operations/OperationDetailPage";
+import { KnowledgeBasePage } from "../pages/knowledge/KnowledgeBasePage";
 import { AnalyticsPage } from "../pages/AnalyticsPage";
 import { CallConsolePage } from "../pages/CallConsolePage";
 import { SettingsPage } from "../pages/SettingsPage";
@@ -62,6 +63,7 @@ export const router = createBrowserRouter([
       { index: true, element: <OverviewPage /> },
       { path: "agents", element: <AgentsListPage /> },
       { path: "agents/:agentId", element: <AgentConfigPage /> },
+      { path: "knowledge", element: <KnowledgeBasePage /> },
       { path: "campaigns", element: <CampaignsListPage /> },
       { path: "campaigns/:campaignId", element: <CampaignDetailPage /> },
       { path: "prospects", element: <ProspectsListPage /> },

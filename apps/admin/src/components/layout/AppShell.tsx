@@ -10,6 +10,7 @@ import {
   fetchAnalytics,
   fetchCampaigns,
   fetchDailyReport,
+  fetchKnowledge,
   fetchOperations,
   fetchProfiles,
   fetchProspects,
@@ -31,6 +32,7 @@ export function AppShell() {
     void dispatch(fetchOperations());
     void dispatch(fetchProspects());
     void dispatch(fetchCampaigns());
+    void dispatch(fetchKnowledge());
     void dispatch(fetchAnalytics());
     void dispatch(fetchDailyReport(undefined));
   }, [dispatch, accountId]);

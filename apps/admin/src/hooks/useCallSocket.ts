@@ -27,11 +27,19 @@ interface CallSocketState {
   sessionLanguage: string | null;
 }
 
+/** Read long digit runs (phone numbers) one digit at a time instead of as a huge cardinal number. */
+function formatForSpeech(text: string): string {
+  return text.replace(/\d[\d\s-]{5,}\d/g, (run) => {
+    const digits = run.replace(/\D/g, "");
+    return digits.length >= 7 && digits.length <= 13 ? digits.split("").join(" ") : run;
+  });
+}
+
 function speakText(text: string, lang: string) {
   if (!text || typeof window === "undefined" || !("speechSynthesis" in window)) return;
   try {
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    const utterance = new SpeechSynthesisUtterance(formatForSpeech(text));
     utterance.lang = lang;
     window.speechSynthesis.speak(utterance);
   } catch {

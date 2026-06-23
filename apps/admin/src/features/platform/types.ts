@@ -133,6 +133,24 @@ export interface OperationDto {
   updatedAt: string;
 }
 
+export type KnowledgeKindDto =
+  | "doctor" | "department" | "service" | "patient_account"
+  | "program" | "education_office" | "student_account"
+  | "staff" | "business_department" | "visitor_policy";
+
+export interface KnowledgeItemDto {
+  id: string;
+  tenantId: string;
+  domain: DomainDto;
+  kind: KnowledgeKindDto;
+  name: string;
+  aliases: string[];
+  active: boolean;
+  details: Record<string, string | string[]>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type FollowUpStatusDto = "new" | "in_progress" | "contacted" | "resolved" | "closed";
 export type SessionOutcomeTypeDto = "none" | "callback_scheduled" | "appointment_confirmed" | "enquiry_forwarded" | "visitor_routed" | "closed_no_action";
 

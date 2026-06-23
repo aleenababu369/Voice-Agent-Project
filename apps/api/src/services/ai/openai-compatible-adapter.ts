@@ -9,6 +9,49 @@ interface AdapterConfig {
   timeoutMs: number;
 }
 
+function useCaseRules(request: LlmTurnRequest): string[] {
+  switch (request.workflow) {
+    case "appointment_booking":
+      return [
+        "- This is an appointment-booking call. Focus on patient identity, symptom/issue, doctor or department, and preferred date/time.",
+        "- If the caller asks whether a doctor is available, do not claim you checked live availability. Capture the doctor/department and the preferred date/time for callback booking.",
+        "- When the caller gives multiple booking details in one utterance, extract all of them and move forward instead of re-asking each separately."
+      ];
+    case "general_enquiry":
+      return [
+        "- This is an enquiry/help-desk call. The enquiry topic is often a natural sentence such as doctor availability, timings, services, admissions, or campus questions.",
+        "- Preserve the caller's exact enquiry meaning in the topic. If they refine a generic question with a more specific one, prefer the more specific wording.",
+        "- Once name, enquiry topic, and contact number are captured, end cleanly. Do not ask if they want to add anything else."
+      ];
+    case "fee_reminder":
+      return [
+        "- This is a reminder call. Be brief, polite, and operational.",
+        "- The acknowledgement field should capture whether the caller has noted the reminder, not a new enquiry topic.",
+        "- Do not drift into a sales or admissions conversation. Finish as soon as identity, reminder acknowledgement, and callback details are clear."
+      ];
+    case "follow_up_confirmation":
+      return [
+        "- This is a follow-up confirmation call. Capture whether the caller can proceed or attend, then the preferred date if needed.",
+        "- If the caller says they cannot attend or cannot proceed, still capture the confirmation status clearly and ask for a suitable date only if that field is still missing.",
+        "- Keep the tone reassuring and practical; avoid restarting identity checks once they are already collected."
+      ];
+    case "frontdesk_reception":
+      return [
+        "- This is a front-desk routing call. Separate the purpose from the destination department or team.",
+        "- When the caller mentions both purpose and department together, extract both and only ask for what remains missing.",
+        "- Keep replies short so the caller is routed quickly."
+      ];
+    case "institution_reception":
+      return [
+        "- This is an education reception/admissions enquiry call. Distinguish the program of interest from the enquiry topic.",
+        "- Examples: \"BTech\" or \"MBA\" is usually the program_interest; \"admission\", \"fees\", \"hostel\", \"scholarship\", or \"seat availability\" is usually the inquiry_topic.",
+        "- If the caller first says a generic admission intent and later asks a more specific question, keep the more specific enquiry topic."
+      ];
+    default:
+      return [];
+  }
+}
+
 function buildSystemPrompt(request: LlmTurnRequest): string {
   const slotLines = request.slots
     .map((slot) => `- ${slot.key} (${slot.label})${slot.required ? " [required]" : ""}: ${slot.prompt}`)
@@ -16,6 +59,19 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
   const supported = request.supportedLanguages?.length ? request.supportedLanguages : [request.language];
   const supportedList = supported.map((code) => `${LANGUAGE_NAMES[code]} (${code})`).join(", ");
   const currentName = LANGUAGE_NAMES[request.language];
+  const nextMissing = request.missing[0];
+  const knowledgeLines = request.knowledge?.handled
+    ? [
+        "",
+        "VERIFIED DATABASE LOOKUP FOR THIS TURN:",
+        ...(request.knowledge.facts.length ? request.knowledge.facts.map((fact) => `- ${fact}`) : ["- No matching current record was found."]),
+        `Safe fallback: ${request.knowledge.fallbackText}`
+      ]
+    : [];
+  // Domain-specific safety: a healthcare agent must never act like a clinician and must escalate emergencies.
+  const domainSafetyRules = request.domain === "healthcare"
+    ? ["- You are NOT a doctor: never diagnose, interpret symptoms, or recommend any treatment or medication. If the caller describes a medical emergency (e.g. chest pain, severe bleeding, difficulty breathing, unconsciousness), tell them to seek emergency care or call emergency services immediately and set action to \"escalate\"."]
+    : [];
   return [
     request.systemPrompt,
     "",
@@ -25,12 +81,20 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
     "",
     `Already collected: ${JSON.stringify(request.collected)}`,
     `Still missing: ${JSON.stringify(request.missing)}`,
+    `The single next field to ask for: ${nextMissing ?? "none — complete the call"}`,
+    ...knowledgeLines,
     "",
     "Respond with ONLY a JSON object, no prose, in this exact shape:",
     '{"reply": string, "extractedFields": {"<field_key>": "<value>"}, "fieldConfidence": {"<field_key>": number}, "language": string, "action": "collect" | "complete" | "ask_clarification" | "escalate", "confidence": number}',
     "Rules:",
     "- Treat the conversation history and Already collected fields as authoritative memory. Never ask again for a field that is already collected unless the caller explicitly corrects it.",
-    "- Ask only for fields listed under Still missing. Do not invent extra sub-questions or restart the conversation.",
+    "- Ask for at most ONE field: exactly the single next field shown above. Do not invent branch/detail questions, request collected fields, or restart the conversation.",
+    "- A request to speak another language is a control instruction, never a caller name, enquiry topic, issue, purpose, or other extracted field.",
+    `- Write the ENTIRE spoken reply in ${currentName}; do not mix English with it. Names, course names, and numbers may remain unchanged.`,
+    "- If VERIFIED DATABASE LOOKUP is present, answer the caller's question first using ONLY those facts. Never alter dates, times, prices, status, names, or availability. Then ask for the single next missing field in the same short reply if one remains.",
+    "- If no matching database record was found, say so plainly and use the safe fallback. Do not invent an answer.",
+    "- If no VERIFIED DATABASE LOOKUP is present, never claim you checked live availability or internal records.",
+    "- When no fields are missing, action MUST be complete and the reply must be a final confirmation. Do not ask whether they want to add anything else.",
     "- Put a field in extractedFields ONLY if the caller actually stated it in their latest message. Use the exact field keys above.",
     "- Extract the CLEAN value only, never the whole sentence: from \"my name is Leena\" set the name to \"Leena\"; from \"I want cardiology timings\" set the topic to \"cardiology timings\". Never include lead-in words like \"my name is\", \"I want\", \"I am interested in\".",
     "- Ignore filler and anything that repeats your own previous question; if the caller only echoed your words and gave no real answer, return empty extractedFields and ask again.",
@@ -41,7 +105,16 @@ function buildSystemPrompt(request: LlmTurnRequest): string {
     "- action = \"escalate\" if the caller asks for a human or there is a safety concern.",
     "- confidence is your 0..1 certainty in understanding the caller overall.",
     "- For phone number or contact number fields, remove spaces and dashes first. The value MUST then be a complete 10-digit Indian mobile number. If the caller gives fewer than 10 digits, do NOT put it in extractedFields — instead ask for the full number. Never read a phone number as a large number (lakhs, crores); always read it digit by digit.",
-    "- reply is what you SAY next to the caller (short, spoken style)."
+    "- reply is what you SAY next to the caller (short, spoken style).",
+    "Handling tricky moments:",
+    "- If the caller corrects a value (\"no, it's actually…\"), replace the old value with the new one and briefly confirm the correction; never keep the wrong value.",
+    "- If the caller gives several details at once, extract every field they stated and only ask for whatever is still missing.",
+    "- If the caller is reluctant to share a required detail, explain in one line why it is needed and ask once more; if they still refuse, acknowledge it and continue with what you have.",
+    "- If the caller asks something off-topic, answer in one short sentence if you reasonably can, then steer back to the next missing field.",
+    "- If the caller spells a name letter by letter, join the letters into the full word (\"A-l-e-e-n-a\" -> \"Aleena\").",
+    "- Never repeat the same sentence twice in a row; if you did not understand, ask again in a simpler way.",
+    ...domainSafetyRules,
+    ...useCaseRules(request)
   ].join("\n");
 }
 
@@ -70,8 +143,8 @@ class OpenAiCompatibleLlmAdapter implements LlmTurnAdapter {
   }
 
   async runTurn(request: LlmTurnRequest): Promise<LlmTurnResult | null> {
-    const configuredAttempts = Number(process.env.LLM_TURN_ATTEMPTS ?? 3);
-    const attempts = Number.isFinite(configuredAttempts) ? Math.max(1, Math.floor(configuredAttempts)) : 3;
+    const configuredAttempts = Number(process.env.LLM_TURN_ATTEMPTS ?? 2);
+    const attempts = Number.isFinite(configuredAttempts) ? Math.max(1, Math.floor(configuredAttempts)) : 2;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       // This also waits for a local model cold-start/restart instead of immediately taking the rule path.
       if (await ensureLlmReady()) {
@@ -98,7 +171,10 @@ class OpenAiCompatibleLlmAdapter implements LlmTurnAdapter {
           model: this.config.model,
           temperature: 0.2,
           response_format: { type: "json_object" },
-          keep_alive: process.env.LLM_KEEP_ALIVE ?? "10m",
+          // The reply is a small JSON object; cap generation so a slow CPU turn stays well under the timeout.
+          max_tokens: 320,
+          // "-1" tells Ollama to keep the model resident indefinitely so calls never hit a cold load.
+          keep_alive: process.env.LLM_KEEP_ALIVE ?? "-1",
           messages: [
             { role: "system", content: buildSystemPrompt(request) },
             ...(request.history ?? []).map((turn) => ({ role: turn.role === "agent" ? "assistant" : "user", content: turn.text })),
@@ -158,7 +234,7 @@ export function getLlmTurnAdapter(): LlmTurnAdapter | null {
     baseUrl,
     apiKey: process.env.LLM_API_KEY ?? "",
     model,
-    timeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 8000)
+    timeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 25000)
   });
   cached = { adapter };
   return adapter;
