@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useAppSelector } from "../../app/hooks";
+import { useAppDispatch, useAppSelector } from "../../app/hooks";
+import { fetchOperations, fetchProspects } from "../../features/platform/platformSlice";
+import { useLiveCallRefresh } from "../../hooks/useLiveCallRefresh";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -12,6 +14,14 @@ export function OperationsListPage() {
   const operations = useAppSelector((state) => state.platform.operations);
   const prospects = useAppSelector((state) => state.platform.prospects);
   const profiles = useAppSelector((state) => state.platform.profiles);
+  const dispatch = useAppDispatch();
+  // Refresh the moment a call completes (its operation is created server-side just before the socket broadcast),
+  // so a freshly booked appointment/enquiry shows here immediately — same live behaviour as the call history page.
+  const refresh = useCallback(() => {
+    void dispatch(fetchOperations());
+    void dispatch(fetchProspects());
+  }, [dispatch]);
+  useLiveCallRefresh(refresh);
   const [type, setType] = useState<"all" | OperationTypeDto>("all");
   const [status, setStatus] = useState<"all" | OperationStatusDto>("all");
   const [query, setQuery] = useState("");

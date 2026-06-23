@@ -8,6 +8,21 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState, MetricCard, SectionHeader, SimpleSelect, formatLabel } from "../../components/common";
+import type { SessionRecordDto } from "../../features/platform/types";
+
+const NAME_SLOTS = ["caller_name", "patient_name", "visitor_name", "student_name"];
+const isPlaceholderName = (name?: string) => !name || /^(caller|inbound caller|unknown caller|prospect)$/i.test(name.trim());
+
+/** Prefer a real display name; otherwise fall back to the name the agent captured during the call. */
+function callerName(session: SessionRecordDto): string {
+  const display = session.participant.displayName?.trim();
+  if (display && !isPlaceholderName(display)) return display;
+  for (const key of NAME_SLOTS) {
+    const value = session.slotState.collected[key];
+    if (value && value.trim()) return value.trim();
+  }
+  return display || "Caller";
+}
 
 export function CallHistoryPage() {
   const dispatch = useAppDispatch();
@@ -55,13 +70,13 @@ export function CallHistoryPage() {
       if (direction !== "all" && session.direction !== direction) return false;
       if (status !== "all" && session.status !== status) return false;
       if (!query) return true;
-      return `${session.participant.displayName ?? ""} ${session.participant.phoneNumber} ${session.workflow} ${Object.values(session.slotState.collected).join(" ")}`.toLowerCase().includes(query);
+      return `${callerName(session)} ${session.participant.phoneNumber} ${session.workflow} ${Object.values(session.slotState.collected).join(" ")}`.toLowerCase().includes(query);
     });
   }, [sessions, search, direction, status]);
 
   function exportCsv() {
     const header = ["session_id", "direction", "status", "workflow", "caller", "phone", "follow_up", "outcome", "created_at", "collected"];
-    const rows = filtered.map((s) => [s.id, s.direction, s.status, s.workflow, s.participant.displayName ?? "", s.participant.phoneNumber, s.followUp.status, s.outcome.type, s.createdAt, JSON.stringify(s.slotState.collected)]);
+    const rows = filtered.map((s) => [s.id, s.direction, s.status, s.workflow, callerName(s), s.participant.phoneNumber, s.followUp.status, s.outcome.type, s.createdAt, JSON.stringify(s.slotState.collected)]);
     const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -95,7 +110,7 @@ export function CallHistoryPage() {
                 <Link key={session.id} to={`/calls/${session.id}`} className="flex items-center justify-between gap-3 px-5 py-3 transition hover:bg-secondary/50">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <strong className="truncate">{session.participant.displayName ?? "Caller"}</strong>
+                      <strong className="truncate">{callerName(session)}</strong>
                       <Badge variant={session.direction === "outbound" ? "outline" : "secondary"}>{session.direction}</Badge>
                     </div>
                     <span className="text-xs text-muted-foreground">{session.workflow} · {new Date(session.createdAt).toLocaleString()}</span>

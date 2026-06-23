@@ -62,6 +62,28 @@ export async function processCallTurn(input: TurnInput): Promise<TurnOutput> {
   });
 
   const updatedSession = await persistenceService.applyTurn(session.id, input.transcript, result);
+
+  // Every workflow asks the caller's name first. As soon as it's captured, backfill the placeholder name on
+  // both the SESSION (shown in call history/analytics) and the prospect record (created for an inbound dial-in
+  // with no name entered), so everything shows the real caller's name instead of "Caller".
+  if (updatedSession) {
+    const collected = updatedSession.slotState.collected;
+    const collectedName = (collected.caller_name ?? collected.patient_name ?? collected.visitor_name ?? collected.student_name ?? "").trim();
+    const isPlaceholder = (name?: string) => !name || /^(caller|inbound caller|unknown caller|prospect)$/i.test(name.trim());
+    if (collectedName) {
+      if (isPlaceholder(updatedSession.participant.displayName) && updatedSession.participant.displayName !== collectedName) {
+        const renamed = await persistenceService.updateParticipantName(updatedSession.id, collectedName);
+        if (renamed) updatedSession.participant = renamed.participant; // reflect it in this turn's broadcast too
+      }
+      if (updatedSession.prospectId) {
+        const prospect = await persistenceService.getProspect(updatedSession.prospectId);
+        if (prospect && isPlaceholder(prospect.name) && prospect.name !== collectedName) {
+          await persistenceService.updateProspect(updatedSession.prospectId, { name: collectedName });
+        }
+      }
+    }
+  }
+
   await persistenceService.recordMetric({
     sessionId: session.id,
     turnSwitchLatencyMs: input.turnSwitchLatencyMs ?? 500,

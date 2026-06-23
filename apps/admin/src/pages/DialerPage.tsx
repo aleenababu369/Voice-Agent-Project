@@ -23,7 +23,6 @@ export function DialerPage() {
   const navigate = useNavigate();
   const baseUrl = useAppSelector((state) => state.demo.apiBaseUrl);
   const [number, setNumber] = useState(params.get("number") ?? "");
-  const [callerName, setCallerName] = useState("");
   const [callerPhone, setCallerPhone] = useState("");
   const [agent, setAgent] = useState<PublicAgent | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -52,8 +51,7 @@ export function DialerPage() {
     try {
       const response = await createApiClient(baseUrl).post<{ session: { id: string } }>("/v1/calls/dial", {
         agentNumber: number.trim(),
-        callerPhone: callerPhone.trim(),
-        ...(callerName.trim() ? { callerName: callerName.trim() } : {})
+        callerPhone: callerPhone.trim()
       });
       navigate(`/softphone?session=${response.data.session.id}&auto=1`);
     } catch (err) {
@@ -86,7 +84,6 @@ export function DialerPage() {
               </div>
             ) : lookupError ? <p className="text-xs text-amber-600">{lookupError}</p> : null}
 
-            <Field label="Your name (optional)"><Input value={callerName} onChange={(e) => setCallerName(e.target.value)} placeholder="e.g. Asha" /></Field>
             <Field label="Your phone"><Input value={callerPhone} onChange={(e) => setCallerPhone(e.target.value)} placeholder="+91…" /></Field>
 
             {error ? <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}

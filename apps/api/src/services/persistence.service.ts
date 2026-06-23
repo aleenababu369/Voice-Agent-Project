@@ -183,6 +183,15 @@ class PersistenceService {
     return updated;
   }
 
+  /** Update the caller's display name on a session (used to backfill the name the agent captured mid-call). */
+  async updateParticipantName(id: string, displayName: string) {
+    const session = await this.getSession(id);
+    if (!session) return undefined;
+    const updated: CallSession = { ...session, participant: { ...session.participant, displayName }, updatedAt: new Date().toISOString() };
+    await this.persistSession(updated);
+    return updated;
+  }
+
   private async persistSession(session: CallSession) {
     this.sessions.set(session.id, session);
     await this.upsert(COLLECTIONS.sessions, session);
